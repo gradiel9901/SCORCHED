@@ -23,6 +23,54 @@ namespace Scorched.Networking
         static MPPMAutoConnector()
         {
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+            EditorApplication.delayCall += EnsureAnimatorSpeedMultiplier;
+        }
+
+        private static void EnsureAnimatorSpeedMultiplier()
+        {
+            var controller = AssetDatabase.LoadAssetAtPath<UnityEditor.Animations.AnimatorController>("Assets/Animations/Player/01_Player.controller");
+            if (controller == null)
+            {
+                return;
+            }
+
+            bool modified = false;
+
+            if (!controller.parameters.Any(p => p.name == "MoveSpeedMultiplier"))
+            {
+                controller.AddParameter(new UnityEngine.AnimatorControllerParameter
+                {
+                    name = "MoveSpeedMultiplier",
+                    type = UnityEngine.AnimatorControllerParameterType.Float,
+                    defaultFloat = 1.0f
+                });
+                modified = true;
+            }
+
+            foreach (var layer in controller.layers)
+            {
+                if (layer.stateMachine == null) continue;
+                foreach (var childState in layer.stateMachine.states)
+                {
+                    var s = childState.state;
+                    if (s != null && (s.name == "Jog" || s.name == "Running" || s.name == "Crouched Run"))
+                    {
+                        if (!s.speedParameterActive || s.speedParameter != "MoveSpeedMultiplier")
+                        {
+                            s.speedParameterActive = true;
+                            s.speedParameter = "MoveSpeedMultiplier";
+                            modified = true;
+                        }
+                    }
+                }
+            }
+
+            if (modified)
+            {
+                EditorUtility.SetDirty(controller);
+                AssetDatabase.SaveAssets();
+                Debug.Log("[MPPMAutoConnector] Configured 'MoveSpeedMultiplier' on 01_Player.controller for backward locomotion.");
+            }
         }
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)

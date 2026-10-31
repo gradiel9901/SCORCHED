@@ -90,6 +90,17 @@ namespace Scorched.Networking
             ConfigureConnectionApproval();
         }
 
+#if UNITY_EDITOR
+        private void Reset()
+        {
+            _networkManager = GetComponent<NetworkManager>();
+            if (_networkManager != null && _networkManager.NetworkConfig != null)
+            {
+                _networkManager.NetworkConfig.ConnectionApproval = true;
+            }
+        }
+#endif
+
         private void OnEnable()
         {
             RegisterCallbacks();

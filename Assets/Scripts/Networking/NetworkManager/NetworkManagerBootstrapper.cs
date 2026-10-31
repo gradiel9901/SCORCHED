@@ -23,7 +23,19 @@ namespace Scorched.Networking
         [Tooltip("Ensure that client and server verify variable safety and matching tick rates.")]
         [SerializeField] private bool _ensureNetworkVariableSafety = true;
 
-        [Header("Client Frame Pacing & Latency")]
+        [Tooltip("Periodically synchronize network clock between server and client to eliminate prediction drift.")]
+        [SerializeField] private bool _enableTimeResync = true;
+
+        [Tooltip("Interval (in seconds) between network clock resynchronizations.")]
+        [SerializeField] private int _timeResyncInterval = 5;
+
+        [Tooltip("Client connection handshake buffer timeout (in seconds). Reduced for rapid failure detection.")]
+        [SerializeField] private int _clientConnectionBufferTimeout = 5;
+
+        [Header("Client Frame Pacing & Background Processing")]
+        [Tooltip("Prevent application throttling when window is unfocused (prevents tick drop and alt-tab desync).")]
+        [SerializeField] private bool _runInBackground = true;
+
         [Tooltip("Disable VSync to eliminate driver frame queue buffering and display latency.")]
         [SerializeField] private bool _disableVSync = true;
 
@@ -99,17 +111,19 @@ namespace Scorched.Networking
         }
 
         /// <summary>
-        /// Optimizes frame pacing and eliminates driver queue delay for responsive input.
+        /// Optimizes frame pacing, eliminates driver queue delay, and ensures background tick processing.
         /// </summary>
         private void ConfigureFramePacing()
         {
+            Application.runInBackground = _runInBackground;
+
             if (_disableVSync)
             {
                 QualitySettings.vSyncCount = 0;
             }
 
             Application.targetFrameRate = _targetFrameRate;
-            Debug.Log($"[NetworkBootstrapper] Frame pacing configured. VSync: {(!_disableVSync ? "Enabled" : "Disabled")}, TargetFrameRate: {(_targetFrameRate == -1 ? "Uncapped (-1)" : _targetFrameRate.ToString())}");
+            Debug.Log($"[NetworkBootstrapper] Frame pacing configured. RunInBackground: {_runInBackground}, VSync: {(!_disableVSync ? "Enabled" : "Disabled")}, TargetFrameRate: {(_targetFrameRate == -1 ? "Uncapped (-1)" : _targetFrameRate.ToString())}");
         }
 
         /// <summary>
@@ -129,12 +143,55 @@ namespace Scorched.Networking
                 return;
             }
 
+            // Auto-link transport if not set
+            if (config.NetworkTransport == null)
+            {
+                var transport = GetComponent<Unity.Netcode.Transports.UTP.UnityTransport>();
+                if (transport != null)
+                {
+                    config.NetworkTransport = transport;
+                }
+            }
+
             // Enforce 64 or 128 tick rate for precision hit registration
             config.TickRate = _networkTickRate;
             config.EnsureNetworkVariableLengthSafety = _ensureNetworkVariableSafety;
+            config.EnableTimeResync = _enableTimeResync;
+            config.TimeResyncInterval = _timeResyncInterval;
+            config.ClientConnectionBufferTimeout = _clientConnectionBufferTimeout;
 
-            Debug.Log($"[NetworkBootstrapper] NetworkManager initialized. Simulation TickRate: {config.TickRate} ticks/sec.");
+            Debug.Log($"[NetworkBootstrapper] NetworkManager initialized. TickRate: {config.TickRate} ticks/sec, TimeResync: {_enableTimeResync} ({_timeResyncInterval}s), BufferTimeout: {_clientConnectionBufferTimeout}s.");
         }
+
+#if UNITY_EDITOR
+        private void Reset()
+        {
+            InitializeNetworkComponents();
+            if (_networkManager != null && _networkManager.NetworkConfig != null)
+            {
+                if (_networkManager.NetworkConfig.NetworkTransport == null)
+                {
+                    _networkManager.NetworkConfig.NetworkTransport = GetComponent<Unity.Netcode.Transports.UTP.UnityTransport>();
+                }
+                _networkManager.NetworkConfig.TickRate = _networkTickRate;
+                _networkManager.NetworkConfig.EnsureNetworkVariableLengthSafety = _ensureNetworkVariableSafety;
+                _networkManager.NetworkConfig.EnableTimeResync = _enableTimeResync;
+                _networkManager.NetworkConfig.TimeResyncInterval = _timeResyncInterval;
+                _networkManager.NetworkConfig.ClientConnectionBufferTimeout = _clientConnectionBufferTimeout;
+            }
+        }
+
+        private void OnValidate()
+        {
+            if (_networkManager != null && _networkManager.NetworkConfig != null)
+            {
+                if (_networkManager.NetworkConfig.NetworkTransport == null)
+                {
+                    _networkManager.NetworkConfig.NetworkTransport = GetComponent<Unity.Netcode.Transports.UTP.UnityTransport>();
+                }
+            }
+        }
+#endif
 
         /// <summary>
         /// Parses startup arguments for automated testing, dedicated servers, and multi-instance launching.

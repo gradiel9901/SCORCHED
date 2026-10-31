@@ -54,8 +54,8 @@ namespace Scorched.Networking
         [SerializeField] private int _heartbeatTimeoutMS = 500;
 
         [Header("Low Latency / Flush Optimization")]
-        [Tooltip("Enforce zero packet delay and zero simulated drop in development/editor.")]
-        [SerializeField] private bool _enforceImmediateFlush = true;
+        [Tooltip("Force raw socket UDP transport with direct packet dispatch for minimal input-to-render latency.")]
+        [SerializeField] private bool _directDatagramDispatch = true;
 
         private UnityTransport _transport;
 
@@ -80,6 +80,18 @@ namespace Scorched.Networking
             ApplyOptimizationParameters();
             ApplyConnectionAddresses();
         }
+
+#if UNITY_EDITOR
+        private void Reset()
+        {
+            InitializeTransport();
+            if (_transport != null)
+            {
+                ApplyOptimizationParameters();
+                _transport.SetConnectionData(_serverIp, _serverPort, _listenAddress);
+            }
+        }
+#endif
 
         private void InitializeTransport()
         {
@@ -111,11 +123,11 @@ namespace Scorched.Networking
             _transport.DisconnectTimeoutMS = _disconnectTimeoutMS;
             _transport.HeartbeatTimeoutMS = _heartbeatTimeoutMS;
 
-            // Zero out any artificial delay in editor/dev builds for raw socket performance
-            if (_enforceImmediateFlush)
+            // Configure socket mode for minimal latency
+            if (_directDatagramDispatch)
             {
-                _transport.DebugSimulator.PacketDelayMS = 0;
-                _transport.DebugSimulator.PacketDropRate = 0;
+                _transport.UseWebSockets = false;
+                _transport.UseEncryption = false;
             }
 
             Debug.Log($"[TransportOptimizer] Parameters optimized: MaxSendQueue={_maxSendQueueSize / 1024}KB, MaxPacketQueue={_maxPacketQueueSize}, MaxPayload={_maxPayloadSize}B, ConnectTimeout={_connectTimeoutMS}ms.");

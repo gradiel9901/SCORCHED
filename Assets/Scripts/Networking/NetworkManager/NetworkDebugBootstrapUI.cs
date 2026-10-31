@@ -1,5 +1,6 @@
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace Scorched.Networking
 {
@@ -15,7 +16,7 @@ namespace Scorched.Networking
         [Header("HUD Configuration")]
         [SerializeField] private bool _enableDebugUI = true;
         [SerializeField] private bool _autoMinimizeOnConnect = true;
-        [SerializeField] private KeyCode _toggleVisibilityKey = KeyCode.BackQuote; // Tilde (~) key
+        [SerializeField] private Key _toggleKey = Key.Backquote; // Tilde (~) key
 
         [Header("Default Connection Fields")]
         [SerializeField] private string _inputIp = "127.0.0.1";
@@ -54,10 +55,7 @@ namespace Scorched.Networking
 
         private void Update()
         {
-            if (Input.GetKeyDown(_toggleVisibilityKey))
-            {
-                _enableDebugUI = !_enableDebugUI;
-            }
+            HandleToggleKey();
 
             // Auto-minimize when transitioning from offline to online
             if (_autoMinimizeOnConnect && _networkManager != null && _networkManager.IsListening)
@@ -71,6 +69,15 @@ namespace Scorched.Networking
             else if (_networkManager != null && !_networkManager.IsListening)
             {
                 _hasConnectedBefore = false;
+            }
+        }
+
+        private void HandleToggleKey()
+        {
+            var keyboard = Keyboard.current;
+            if (keyboard != null && keyboard[_toggleKey].wasPressedThisFrame)
+            {
+                _enableDebugUI = !_enableDebugUI;
             }
         }
 
