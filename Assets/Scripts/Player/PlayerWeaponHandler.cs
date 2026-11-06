@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using Scorched.Weapons;
 
 namespace Scorched.Player
 {
@@ -115,6 +116,13 @@ namespace Scorched.Player
         [Tooltip("Currently equipped weapon transform in the socket.")]
         [SerializeField] private Transform _equippedWeapon;
 
+        [Header("Ballistic Projectile & Muzzle")]
+        [Tooltip("Bullet projectile prefab spawned when firing.")]
+        [SerializeField] private GameObject _bulletPrefab;
+
+        [Tooltip("Dedicated muzzle point at the tip of the rifle barrel.")]
+        [SerializeField] private Transform _muzzlePoint;
+
         [Header("Blending")]
         [Tooltip("Transition speed when blending the socket between state poses.")]
         [SerializeField] private float _poseTransitionSpeed = 16.0f;
@@ -131,7 +139,7 @@ namespace Scorched.Player
 
         [Header("Runtime Debug HUD")]
         [Tooltip("Show the on-screen preview HUD during Play Mode (F1 to toggle).")]
-        [SerializeField] private bool _showDebugOverlay = true;
+        [SerializeField] private bool _showDebugOverlay = false;
 
         private PlayerMovement _playerMovement;
         private Animator _animator;
@@ -179,6 +187,8 @@ namespace Scorched.Player
             EnsureHandAndSocket();
             AutoDetectSceneWeaponIfNull();
             LoadSavedPosesFromFile();
+            GetOrCreateMuzzlePoint();
+            SyncWithNetworkWeaponController();
         }
 
         private void Start()
@@ -188,6 +198,8 @@ namespace Scorched.Player
             {
                 AttachWeaponToSocket(_equippedWeapon);
             }
+            GetOrCreateMuzzlePoint();
+            SyncWithNetworkWeaponController();
         }
 
         private void Update()
@@ -233,9 +245,20 @@ namespace Scorched.Player
                 : WeaponPoseState.Idle;
 
             WeaponPose target = GetPoseForState(activeState);
+            Vector3 targetLocalPos = target.LocalPosition;
+
+            // When aiming high up into the sky, gently nudge the weapon forward and down relative to hand
+            // to ensure realistic eye relief distance and prevent clipping into the camera view
+            float pitch = _playerMovement != null ? _playerMovement.CameraPitch : 0f;
+            if (pitch < -10f)
+            {
+                float highAimFactor = Mathf.Clamp01((-pitch - 10f) / 70f);
+                targetLocalPos += new Vector3(0.006f * highAimFactor, -0.025f * highAimFactor, 0.04f * highAimFactor);
+            }
+
             float t = 1f - Mathf.Exp(-_poseTransitionSpeed * Time.deltaTime);
 
-            _weaponSocket.localPosition = Vector3.Lerp(_weaponSocket.localPosition, target.LocalPosition, t);
+            _weaponSocket.localPosition = Vector3.Lerp(_weaponSocket.localPosition, targetLocalPos, t);
             _weaponSocket.localRotation = Quaternion.Slerp(_weaponSocket.localRotation, target.Rotation, t);
         }
         #endregion
@@ -362,6 +385,10 @@ namespace Scorched.Player
             weapon.localRotation = Quaternion.Euler(DefaultRifleEuler);
             weapon.localScale = Vector3.one;
 
+            _muzzlePoint = null;
+            GetOrCreateMuzzlePoint();
+            SyncWithNetworkWeaponController();
+
             WeaponPoseState state = _enablePreviewMode || _playerMovement == null
                 ? _previewState
                 : _playerMovement.CurrentWeaponPoseState;
@@ -377,6 +404,8 @@ namespace Scorched.Player
 
             var weapon = _equippedWeapon;
             _equippedWeapon = null;
+            _muzzlePoint = null;
+            SyncWithNetworkWeaponController();
             weapon.SetParent(null, true);
 
             if (weapon.TryGetComponent(out Rigidbody rb))
@@ -390,6 +419,92 @@ namespace Scorched.Player
             {
                 c.enabled = true;
             }
+        }
+
+        public void SyncWithNetworkWeaponController()
+        {
+            if (TryGetComponent(out Weapons.NetworkWeaponController netWeap))
+            {
+                netWeap.MuzzlePoint = _muzzlePoint;
+            }
+        }
+        #endregion
+
+        #region Projectile Firing
+        public Transform GetOrCreateMuzzlePoint()
+        {
+            if (_muzzlePoint != null) return _muzzlePoint;
+
+            if (_equippedWeapon == null)
+            {
+                AutoDetectSceneWeaponIfNull();
+            }
+
+            if (_equippedWeapon != null)
+            {
+                _muzzlePoint = FindDeepChild(_equippedWeapon, "MuzzlePoint");
+                if (_muzzlePoint == null)
+                {
+                    var muzzleGo = new GameObject("MuzzlePoint");
+                    muzzleGo.transform.SetParent(_equippedWeapon, false);
+                    // Positioned at the barrel tip of the AK47 in local space
+                    muzzleGo.transform.localPosition = new Vector3(0f, 0.045f, 0.65f);
+                    muzzleGo.transform.localRotation = Quaternion.identity;
+                    _muzzlePoint = muzzleGo.transform;
+                }
+            }
+            return _muzzlePoint;
+        }
+
+        public Vector3 GetMuzzlePosition()
+        {
+            var muzzle = GetOrCreateMuzzlePoint();
+            if (muzzle != null) return muzzle.position;
+
+            if (_equippedWeapon != null)
+            {
+                return _equippedWeapon.position + _equippedWeapon.forward * 0.65f + _equippedWeapon.up * 0.045f;
+            }
+
+            return transform.position + transform.forward * 0.5f + Vector3.up * 1.5f;
+        }
+
+        public BulletProjectile SpawnBullet(Vector3 targetPoint, Collider shooterCollider)
+        {
+            if (_bulletPrefab == null)
+            {
+#if UNITY_EDITOR
+                _bulletPrefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/Bullet_Projectile.prefab");
+#endif
+            }
+
+            Vector3 spawnPos = GetMuzzlePosition();
+            Vector3 fireDirection = (targetPoint - spawnPos).normalized;
+            if (fireDirection.sqrMagnitude < 0.001f)
+            {
+                fireDirection = transform.forward;
+            }
+
+            GameObject bulletGo = null;
+            if (_bulletPrefab != null)
+            {
+                bulletGo = Instantiate(_bulletPrefab, spawnPos, Quaternion.LookRotation(fireDirection, Vector3.up));
+            }
+            else
+            {
+                bulletGo = new GameObject("Bullet_Runtime_Fallback");
+                bulletGo.transform.position = spawnPos;
+                bulletGo.transform.rotation = Quaternion.LookRotation(fireDirection, Vector3.up);
+                bulletGo.AddComponent<BulletProjectile>();
+            }
+
+            var proj = bulletGo.GetComponent<BulletProjectile>();
+            if (proj != null)
+            {
+                proj.Initialize(fireDirection, shooterCollider);
+            }
+
+            return proj;
         }
         #endregion
 

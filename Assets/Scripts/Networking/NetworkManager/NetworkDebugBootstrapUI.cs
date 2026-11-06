@@ -14,7 +14,7 @@ namespace Scorched.Networking
     public class NetworkDebugBootstrapUI : MonoBehaviour
     {
         [Header("HUD Configuration")]
-        [SerializeField] private bool _enableDebugUI = true;
+        [SerializeField] private bool _enableDebugUI = false;
         [SerializeField] private bool _autoMinimizeOnConnect = true;
         [SerializeField] private Key _toggleKey = Key.Backquote; // Tilde (~) key
 

@@ -58,6 +58,14 @@ namespace Scorched.Networking
         public int MaxPlayers => _maxPlayers;
 
         /// <summary>
+        /// Sets the maximum player capacity for the room/match.
+        /// </summary>
+        public void SetMaxPlayers(int count)
+        {
+            _maxPlayers = Mathf.Clamp(count, 2, MaxAllowedPlayers);
+        }
+
+        /// <summary>
         /// Number of currently connected and approved players.
         /// </summary>
         public int ConnectedPlayerCount => _connectedClients.Count;
@@ -170,7 +178,7 @@ namespace Scorched.Networking
             // Host player is always approved unconditionally
             if (clientId == NetworkManager.ServerClientId)
             {
-                ApproveConnection(response, "Host player approved.");
+                ApproveConnection(response, "Host player approved.", clientId);
                 return;
             }
 
@@ -191,18 +199,38 @@ namespace Scorched.Networking
             }
 
             // Connection validated
-            ApproveConnection(response, $"Client {clientId} approved.");
+            ApproveConnection(response, $"Client {clientId} approved.", clientId);
         }
 
-        private void ApproveConnection(NetworkManager.ConnectionApprovalResponse response, string logMessage)
+        private void ApproveConnection(NetworkManager.ConnectionApprovalResponse response, string logMessage, ulong clientId)
         {
             response.Approved = true;
             response.CreatePlayerObject = _autoSpawnPlayerPrefab;
             response.PlayerPrefabHash = null; // Use default registered player prefab
-            response.Position = null;         // Let spawn system dictate position
-            response.Rotation = null;
-            response.Pending = false;
 
+            int team = -1;
+            Scorched.Combat.GameMode mode = Scorched.Combat.GameMode.FreeForAll;
+
+            if (Scorched.Combat.NetworkMatchManager.Instance != null)
+            {
+                team = Scorched.Combat.NetworkMatchManager.Instance.RegisterPlayer(clientId);
+                mode = Scorched.Combat.NetworkMatchManager.Instance.CurrentGameMode;
+            }
+
+            if (Scorched.Player.TacticalSpawnManager.Instance != null)
+            {
+                Scorched.Player.TacticalSpawnManager.Instance.GetSpawn(clientId, team, mode, out Vector3 spawnPos, out Quaternion spawnRot);
+                response.Position = spawnPos;
+                response.Rotation = spawnRot;
+                Debug.Log($"[ConnectionHandler] Spawning client {clientId} at tactical position {spawnPos} (Team: {team}, Mode: {mode}).");
+            }
+            else
+            {
+                response.Position = null;
+                response.Rotation = null;
+            }
+
+            response.Pending = false;
             Debug.Log($"[ConnectionHandler] {logMessage}");
         }
 
@@ -231,6 +259,15 @@ namespace Scorched.Networking
         {
             bool wasTracked = _connectedClients.Remove(clientId);
 
+            if (Scorched.Combat.NetworkMatchManager.Instance != null)
+            {
+                Scorched.Combat.NetworkMatchManager.Instance.UnregisterPlayer(clientId);
+            }
+            if (Scorched.Player.TacticalSpawnManager.Instance != null)
+            {
+                Scorched.Player.TacticalSpawnManager.Instance.ReleaseSpawn(clientId);
+            }
+
             // Handle local client disconnection
             if (_networkManager != null && clientId == _networkManager.LocalClientId)
             {
@@ -258,6 +295,12 @@ namespace Scorched.Networking
         {
             _connectedClients.Clear();
             _isMatchInProgress = false;
+
+            if (Scorched.Player.TacticalSpawnManager.Instance != null)
+            {
+                Scorched.Player.TacticalSpawnManager.Instance.ResetSpawns();
+            }
+
             Debug.Log("[ConnectionHandler] Server started. Lobby open for incoming connections.");
         }
 
@@ -266,6 +309,12 @@ namespace Scorched.Networking
             Debug.Log($"[ConnectionHandler] Server stopped (WasHost: {wasHost}). Cleaning up connection state.");
             _connectedClients.Clear();
             _isMatchInProgress = false;
+
+            if (Scorched.Player.TacticalSpawnManager.Instance != null)
+            {
+                Scorched.Player.TacticalSpawnManager.Instance.ResetSpawns();
+            }
+
             OnSessionTerminated?.Invoke();
         }
 
