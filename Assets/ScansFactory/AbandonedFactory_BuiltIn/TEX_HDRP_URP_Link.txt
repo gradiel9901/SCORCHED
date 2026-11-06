@@ -1,0 +1,8 @@
+HIGH RESOLUTION TEKSTURES
+https://scansfactory.com/download/Unity/AbandonedFactoryBuildings/564154_TEX_AbandonedFactory_2022.3.47f1.zip
+
+HDRP
+https://scansfactory.com/download/Unity/AbandonedFactoryBuildings/135146_HDRP_AbandonedFactory_2022.3.47f1.unitypackage
+
+URP
+https://scansfactory.com/download/Unity/AbandonedFactoryBuildings/635241_URP_AbandonedFactory_2022.3.47f1.unitypackage
