@@ -1,0 +1,212 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7886c5d4531f42b4bae5ce80c0feb4e0, type: 3}
+  m_Name: ScorchedItemCatalog
+  m_EditorClassIdentifier: Assembly-CSharp::Scorched.Inventory.ScorchedItemCatalog
+  RadialProgressRingSprite: {fileID: 21300000, guid: ecc9f07483820264493d7b9883bc61ff, type: 3}
+  CabalSlotCellSprite: {fileID: 21300000, guid: b6cd0728a461f6149977b2622014bf30, type: 3}
+  Items:
+  - Id: 1
+    DisplayName: Dirty Water Bottle
+    ShortTag: H2O I
+    Category: 0
+    Grade: 1
+    GridWidth: 1
+    GridHeight: 1
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 10
+    UpgradesToId: 2
+    Icon: {fileID: 21300000, guid: 9e5e86ee5c96d1a409dbaa1e4175f83f, type: 3}
+    WorldPickupPrefab: {fileID: 6958194448246917958, guid: 97d0407e2c8793a4f811be75d40852a4, type: 3}
+  - Id: 2
+    DisplayName: Military Canteen
+    ShortTag: H2O II
+    Category: 0
+    Grade: 2
+    GridWidth: 1
+    GridHeight: 2
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 30
+    UpgradesToId: 3
+    Icon: {fileID: 21300000, guid: fd40975a4dc83b24dbd52922b6da1617, type: 3}
+    WorldPickupPrefab: {fileID: 5337855776523740055, guid: 1b118a5daaa992e409ecf5a143456c07, type: 3}
+  - Id: 3
+    DisplayName: Insulated Purifier Jug
+    ShortTag: H2O III
+    Category: 0
+    Grade: 3
+    GridWidth: 2
+    GridHeight: 2
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 75
+    UpgradesToId: 0
+    Icon: {fileID: 21300000, guid: 57fe3d5499010ab4c80adaf97af2cfb2, type: 3}
+    WorldPickupPrefab: {fileID: 7575589951031643508, guid: c20dfd2e0ef02d34586ae16a1d4bd0c5, type: 3}
+  - Id: 10
+    DisplayName: Cloth Rag Bandage
+    ShortTag: MED I
+    Category: 1
+    Grade: 1
+    GridWidth: 1
+    GridHeight: 1
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 10
+    UpgradesToId: 11
+    Icon: {fileID: 21300000, guid: 156f9e6693e876945a07ec473372e727, type: 3}
+    WorldPickupPrefab: {fileID: 3524456310161068618, guid: 7297f8513ebb7aa4abbd67dc9619c0f0, type: 3}
+  - Id: 11
+    DisplayName: Sterile Combat Gauze
+    ShortTag: MED II
+    Category: 1
+    Grade: 2
+    GridWidth: 1
+    GridHeight: 2
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 30
+    UpgradesToId: 12
+    Icon: {fileID: 21300000, guid: 07bfad67d4d02ab4d9c70fca0f208286, type: 3}
+    WorldPickupPrefab: {fileID: 8610192141792650413, guid: fb0f10c6a09044c449787ab64c653640, type: 3}
+  - Id: 12
+    DisplayName: Trauma Medkit
+    ShortTag: MED III
+    Category: 1
+    Grade: 3
+    GridWidth: 2
+    GridHeight: 2
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 75
+    UpgradesToId: 0
+    Icon: {fileID: 21300000, guid: fb29bc1d1dec602469e61547d6d9acde, type: 3}
+    WorldPickupPrefab: {fileID: 3840731793578172777, guid: 25fd40e2bb3702b40b7c0f01eead036d, type: 3}
+  - Id: 20
+    DisplayName: Dented Tin Beans
+    ShortTag: RATS I
+    Category: 2
+    Grade: 1
+    GridWidth: 1
+    GridHeight: 1
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 10
+    UpgradesToId: 21
+    Icon: {fileID: 21300000, guid: 916c12846315a424d93b82934baed300, type: 3}
+    WorldPickupPrefab: {fileID: 8916801362169021213, guid: 902fecb8d4050d14abbabaf5aa7d05ba, type: 3}
+  - Id: 21
+    DisplayName: Military MRE Pouch
+    ShortTag: RATS II
+    Category: 2
+    Grade: 2
+    GridWidth: 1
+    GridHeight: 2
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 30
+    UpgradesToId: 22
+    Icon: {fileID: 21300000, guid: 83ba5ef851b9a4845a6e335d76d71e92, type: 3}
+    WorldPickupPrefab: {fileID: 6520874657349810201, guid: b1d343655a77bbf439e10f1a8f032bf7, type: 3}
+  - Id: 22
+    DisplayName: High-Protein Field Ration
+    ShortTag: RATS III
+    Category: 2
+    Grade: 3
+    GridWidth: 2
+    GridHeight: 2
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 75
+    UpgradesToId: 0
+    Icon: {fileID: 21300000, guid: 7f0d04cd409fae04aa5fd48d1525936d, type: 3}
+    WorldPickupPrefab: {fileID: 4323027167587683038, guid: fc30c6728ebd7a643b3def2a957dccca, type: 3}
+  - Id: 30
+    DisplayName: AK-47 Receiver Body
+    ShortTag: PART:RCV
+    Category: 3
+    Grade: 0
+    GridWidth: 1
+    GridHeight: 1
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 0
+    UpgradesToId: 0
+    Icon: {fileID: 21300000, guid: 37a3ead589ef4d84ba159a16bb1ac64e, type: 3}
+    WorldPickupPrefab: {fileID: 8635138335168250845, guid: e6da728f9f58344479ddb35d4401504c, type: 3}
+  - Id: 31
+    DisplayName: AK-47 Barrel & Handguard
+    ShortTag: PART:BRL
+    Category: 3
+    Grade: 0
+    GridWidth: 1
+    GridHeight: 1
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 0
+    UpgradesToId: 0
+    Icon: {fileID: 21300000, guid: c62645138c939054eb73a79b64748a1c, type: 3}
+    WorldPickupPrefab: {fileID: 3877166053965032985, guid: 08582cefd8e8f2f4ab0135f0b1c80a0d, type: 3}
+  - Id: 32
+    DisplayName: AK-47 Wooden Stock
+    ShortTag: PART:STK
+    Category: 3
+    Grade: 0
+    GridWidth: 1
+    GridHeight: 1
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 0
+    UpgradesToId: 0
+    Icon: {fileID: 21300000, guid: 2cc38fa2e889bfd41b16392ed277fb1a, type: 3}
+    WorldPickupPrefab: {fileID: 1843641743533468730, guid: 9c76d9179776ad443b122661fccc004a, type: 3}
+  - Id: 33
+    DisplayName: AK-47 Bolt & Magazine
+    ShortTag: PART:BLT
+    Category: 3
+    Grade: 0
+    GridWidth: 1
+    GridHeight: 1
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 0
+    UpgradesToId: 0
+    Icon: {fileID: 21300000, guid: 63ea30abaf3c2fd469bc5970ec495afe, type: 3}
+    WorldPickupPrefab: {fileID: 2654544069650522630, guid: 3f4e5a53f6c8f7a45bb7f8bec99bae3e, type: 3}
+  - Id: 40
+    DisplayName: 7.62x39mm Ammo Tin
+    ShortTag: 7.62
+    Category: 4
+    Grade: 0
+    GridWidth: 1
+    GridHeight: 1
+    IsStackable: 1
+    MaxStack: 120
+    RestoreAmount: 0
+    UpgradesToId: 0
+    Icon: {fileID: 21300000, guid: fc4fc8f90da47654ab567f6fbd2f0880, type: 3}
+    WorldPickupPrefab: {fileID: 2035419974668667714, guid: 22118048a0aff644193f87c0a7679fe9, type: 3}
+  - Id: 50
+    DisplayName: AK-47 Tactical
+    ShortTag: AK-47
+    Category: 5
+    Grade: 3
+    GridWidth: 2
+    GridHeight: 1
+    IsStackable: 0
+    MaxStack: 1
+    RestoreAmount: 0
+    UpgradesToId: 0
+    Icon: {fileID: 21300000, guid: 37a3ead589ef4d84ba159a16bb1ac64e, type: 3}
+    WorldPickupPrefab: {fileID: 0}

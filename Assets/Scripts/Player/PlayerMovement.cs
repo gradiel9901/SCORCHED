@@ -224,8 +224,14 @@ namespace Scorched.Player
         [Tooltip("Stamina drain rate while sprinting (points per second).")]
         [SerializeField] private float _staminaDrainRate = 22.0f;
 
-        [Tooltip("Stamina recovery rate while walking, jogging, or idle (points per second).")]
-        [SerializeField] private float _staminaRegenRate = 18.0f;
+        [Tooltip("Stamina drained per jump (points).")]
+        [SerializeField] private float _jumpStaminaCost = 10.0f;
+
+        [Tooltip("Automatic stamina regeneration disabled (Food-only recovery).")]
+        [SerializeField] private bool _disableAutoStaminaRegen = true;
+
+        [Tooltip("Legacy stamina recovery rate (0 when Food-only stamina is enabled).")]
+        [SerializeField] private float _staminaRegenRate = 0f;
         #endregion
 
         #region Network State
@@ -270,7 +276,12 @@ namespace Scorched.Player
         private PlayerHealthController _healthController;
         private PlayerWeaponHandler _weaponHandler;
         private NetworkWeaponController _networkWeaponController;
+        private Scorched.Survival.PlayerThermalController _thermalController;
         private bool _isDuplicateSceneInstance = false;
+
+        private Vector3 _prevWorldPosition;
+        private Vector3 _smoothedWorldVelocity;
+        private bool _hasPrevWorldPos;
 
         private Vector3 _velocity;
         private Vector3 _airborneVelocity;
@@ -350,6 +361,9 @@ namespace Scorched.Player
         public bool IsAirborne => _isAirborne;
         public bool IsSprintJumpActive => _isSprintJumpActive;
         public LocomotionState CurrentLocomotion => _currentLocomotion;
+        public Vector3 WorldVelocity => _smoothedWorldVelocity;
+        public float CurrentStamina => _currentStamina;
+        public float MaxStamina => _maxStamina;
         public float CurrentHealth => _healthController != null ? _healthController.CurrentHealthValue : _currentHealth;
         public bool IsDead => _healthController != null ? _healthController.IsDead : (_currentHealth <= 0f);
         public PlayerHealthController HealthController => _healthController;
@@ -438,6 +452,9 @@ namespace Scorched.Player
             _healthController = GetComponent<PlayerHealthController>();
             _weaponHandler = GetComponent<PlayerWeaponHandler>();
             _networkWeaponController = GetComponent<NetworkWeaponController>();
+            _thermalController = GetComponent<Scorched.Survival.PlayerThermalController>();
+            _prevWorldPosition = transform.position;
+            _hasPrevWorldPos = true;
             EnsureHeadBone();
             EnsureSpineBones();
             CheckUpperBodyLayer();
@@ -502,13 +519,13 @@ namespace Scorched.Player
                 PlayAnimationDirect(AnimStateIdle, 0f);
             }
 
-            // Initialize Left 4 Dead 2 style tactical HUD for local client
+            // Initialize tactical HUD for local client
             if (!IsSpawned || IsOwner)
             {
-                if (Scorched.UI.L4DHUDManager.Instance == null && FindAnyObjectByType<Scorched.UI.L4DHUDManager>() == null)
+                if (Scorched.UI.ScorchedHUDController.Instance == null && FindAnyObjectByType<Scorched.UI.ScorchedHUDController>() == null)
                 {
-                    var hudGo = new GameObject("L4D_HUD_Manager");
-                    hudGo.AddComponent<Scorched.UI.L4DHUDManager>();
+                    var hudGo = new GameObject("Scorched_HUD");
+                    hudGo.AddComponent<Scorched.UI.ScorchedHUDController>();
                 }
             }
         }
@@ -634,12 +651,14 @@ namespace Scorched.Player
                 _networkAimPitch.Value = _cameraPitch;
 
                 // Initialize tactical HUD for local client
-                if (Scorched.UI.L4DHUDManager.Instance == null && FindAnyObjectByType<Scorched.UI.L4DHUDManager>() == null)
+                if (Scorched.UI.ScorchedHUDController.Instance == null && FindAnyObjectByType<Scorched.UI.ScorchedHUDController>() == null)
                 {
-                    var hudGo = new GameObject("L4D_HUD_Manager");
-                    hudGo.AddComponent<Scorched.UI.L4DHUDManager>();
+                    var hudGo = new GameObject("Scorched_HUD");
+                    hudGo.AddComponent<Scorched.UI.ScorchedHUDController>();
                 }
 
+                Scorched.UI.ScorchedHUDController.Instance?.UpdateHealth(CurrentHealth, _maxHealth);
+                Scorched.UI.ScorchedHUDController.Instance?.UpdateStamina(_currentStamina, _maxStamina);
                 Scorched.UI.L4DHUDManager.Instance?.UpdateHealth(CurrentHealth, _maxHealth);
                 Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
             }
@@ -898,6 +917,10 @@ namespace Scorched.Player
                 newCam.nearClipPlane = _nearClipPlane;
                 camGo.AddComponent<AudioListener>();
 
+                var camData = camGo.AddComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
+                camData.renderPostProcessing = true;
+                camData.volumeLayerMask = ~0;
+
                 _cameraTransform = camGo.transform;
                 Debug.Log("[PlayerMovement] Auto-generated FPS camera at eye level.");
             }
@@ -909,6 +932,10 @@ namespace Scorched.Player
                 {
                     cam.nearClipPlane = _nearClipPlane;
                     cam.fieldOfView = _fieldOfView;
+                    var camData = cam.GetComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>()
+                                  ?? cam.gameObject.AddComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
+                    camData.renderPostProcessing = true;
+                    camData.volumeLayerMask = ~0;
                 }
                 UpdateCameraPositionAndRotation();
             }
@@ -920,6 +947,19 @@ namespace Scorched.Player
             {
                 return;
             }
+
+            if (_hasPrevWorldPos && Time.deltaTime > 0.0001f)
+            {
+                Vector3 instantVel = (transform.position - _prevWorldPosition) / Time.deltaTime;
+                instantVel.y = 0f;
+                if (_characterController != null && _characterController.enabled && _characterController.velocity.sqrMagnitude > instantVel.sqrMagnitude)
+                {
+                    instantVel = new Vector3(_characterController.velocity.x, 0f, _characterController.velocity.z);
+                }
+                _smoothedWorldVelocity = Vector3.Lerp(_smoothedWorldVelocity, instantVel, Mathf.Clamp01(Time.deltaTime * 15f));
+            }
+            _prevWorldPosition = transform.position;
+            _hasPrevWorldPos = true;
 
             // Remote proxies smoothly interpolate rotation to match the replicated aim yaw in real-time
             if (IsSpawned && !IsOwner)
@@ -1205,6 +1245,16 @@ namespace Scorched.Player
                 return;
             }
 
+            if (Scorched.Inventory.ScorchedInputGates.IsInventoryOpen ||
+                Scorched.Inventory.ScorchedInputGates.LastUiClosedFrame == Time.frameCount)
+            {
+                if (Scorched.Inventory.ScorchedInputGates.IsInventoryOpen && (Cursor.lockState != CursorLockMode.None || !Cursor.visible))
+                {
+                    UnlockCursor();
+                }
+                return;
+            }
+
             var keyboard = Keyboard.current ?? InputSystem.GetDevice<Keyboard>();
             var mouse = Mouse.current ?? InputSystem.GetDevice<Mouse>();
 
@@ -1239,6 +1289,10 @@ namespace Scorched.Player
 
         private void HandleLookInput()
         {
+            if (Scorched.Inventory.ScorchedInputGates.IsInventoryOpen)
+            {
+                return;
+            }
             if (_healthController != null && _healthController.IsDead)
             {
                 return;
@@ -1382,21 +1436,30 @@ namespace Scorched.Player
                 _healthController?.SetDownedMovingState(false);
             }
 
-            // Stamina drain while sprinting, recovery while walking/jogging/idle
+            // Permanent Stamina (Hunger): sprints & jumps drain Stamina permanently until Food is eaten
+            bool uiBlocked = Scorched.Inventory.ScorchedInputGates.IsInventoryOpen;
+            if (uiBlocked)
+            {
+                isSprintHeld = false;
+                isJumpPressed = false;
+            }
+
             bool wantsSprint = !isDowned && isSprintHeld && isMoving && vertical > 0.1f && !_isCrouching;
-            bool canSprint = wantsSprint && _currentStamina > 3.0f;
+            bool canSprint = wantsSprint && _currentStamina > 0.1f;
 
             if (canSprint)
             {
                 _currentStamina = Mathf.Max(0f, _currentStamina - (_staminaDrainRate * Time.deltaTime));
             }
-            else
+            else if (!_disableAutoStaminaRegen && _staminaRegenRate > 0f)
             {
-                _currentStamina = Mathf.Min(_maxStamina, _currentStamina + (_staminaRegenRate * Time.deltaTime));
+                float thermalRegenMul = _thermalController != null ? _thermalController.StaminaRegenMultiplier : 1f;
+                _currentStamina = Mathf.Min(_maxStamina, _currentStamina + (_staminaRegenRate * thermalRegenMul * Time.deltaTime));
             }
 
             if (IsOwner)
             {
+                Scorched.UI.ScorchedHUDController.Instance?.UpdateStamina(_currentStamina, _maxStamina);
                 Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
             }
 
@@ -1460,9 +1523,15 @@ namespace Scorched.Player
                 horizontalMove = moveDirection * (currentSpeed * Time.deltaTime);
             }
 
-            // Jump execution (locked out while Downed or Crouched)
-            if (!isDowned && isJumpPressed && _isGrounded && !_isCrouching)
+            // Jump execution (locked out while Downed, Crouched, or exhausted with 0 Stamina)
+            if (!isDowned && isJumpPressed && _isGrounded && !_isCrouching && _currentStamina > 0.5f)
             {
+                _currentStamina = Mathf.Max(0f, _currentStamina - _jumpStaminaCost);
+                if (IsOwner)
+                {
+                    Scorched.UI.ScorchedHUDController.Instance?.UpdateStamina(_currentStamina, _maxStamina);
+                    Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
+                }
                 ExecuteJump(isMoving, moveDirection, currentSpeed);
             }
 
@@ -1539,6 +1608,10 @@ namespace Scorched.Player
 
         private void HandleCombatInput()
         {
+            if (Scorched.Inventory.ScorchedInputGates.IsInventoryOpen)
+            {
+                return;
+            }
             if (_healthController != null && !_healthController.CanPerformCombatActions)
             {
                 _attackTimer = 0f;
@@ -1582,7 +1655,8 @@ namespace Scorched.Player
                     }
 
                     // Pulse crosshair in HUD
-                    Scorched.UI.L4DHUDManager.Instance?.OnWeaponFired();
+                    Scorched.UI.ScorchedHUDController.Instance?.OnWeaponFired();
+            Scorched.UI.L4DHUDManager.Instance?.OnWeaponFired();
                 }
             }
             else
@@ -1629,7 +1703,8 @@ namespace Scorched.Player
                     }
 
                     // Pulse crosshair in HUD
-                    Scorched.UI.L4DHUDManager.Instance?.OnWeaponFired();
+                    Scorched.UI.ScorchedHUDController.Instance?.OnWeaponFired();
+            Scorched.UI.L4DHUDManager.Instance?.OnWeaponFired();
                 }
             }
 
@@ -1805,6 +1880,7 @@ namespace Scorched.Player
 
             if (!IsSpawned || IsOwner)
             {
+                Scorched.UI.ScorchedHUDController.Instance?.UpdateStamina(_currentStamina, _maxStamina);
                 Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
             }
         }
@@ -1863,6 +1939,9 @@ namespace Scorched.Player
                 return;
             }
 
+            _currentLocomotion = (LocomotionState)newValue;
+            _isCrouching = _currentLocomotion == LocomotionState.CrouchIdle || _currentLocomotion == LocomotionState.CrouchedRun;
+
             if (_healthController != null && !_healthController.IsAlive)
             {
                 return;
@@ -1886,6 +1965,30 @@ namespace Scorched.Player
             }
 
             _animator.SetFloat(AnimParamSpeedMultiplier, isBackward ? -1.0f : 1.0f);
+        }
+
+        public void RestoreStaminaAuthoritative(float amount)
+        {
+            if (amount <= 0f) return;
+
+            if (!IsSpawned || IsOwner)
+            {
+                _currentStamina = Mathf.Min(_maxStamina, _currentStamina + amount);
+                Scorched.UI.ScorchedHUDController.Instance?.UpdateStamina(_currentStamina, _maxStamina);
+                Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
+            }
+            else if (IsServer)
+            {
+                RestoreStaminaOwnerRpc(amount);
+            }
+        }
+
+        [Rpc(SendTo.Owner)]
+        private void RestoreStaminaOwnerRpc(float amount)
+        {
+            _currentStamina = Mathf.Min(_maxStamina, _currentStamina + Mathf.Max(0f, amount));
+            Scorched.UI.ScorchedHUDController.Instance?.UpdateStamina(_currentStamina, _maxStamina);
+            Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
         }
 
         /// <summary>

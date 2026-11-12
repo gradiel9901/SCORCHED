@@ -203,7 +203,7 @@ namespace Scorched.Networking
         /// </summary>
         private void ProcessCommandLineArguments()
         {
-            string[] args = Environment.GetCommandLineArgs();
+            string[] args = global::System.Environment.GetCommandLineArgs();
             if (args == null || args.Length == 0)
             {
                 return;

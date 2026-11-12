@@ -42,13 +42,13 @@ namespace Scorched.Networking
 
         [Header("Connection Latency & Timeouts")]
         [Tooltip("Maximum connection attempts before declaring connection failure.")]
-        [SerializeField] private int _maxConnectAttempts = 8;
+        [SerializeField] private int _maxConnectAttempts = 10;
 
-        [Tooltip("Interval between connection retry attempts (ms). Kept low for rapid reconnects.")]
-        [SerializeField] private int _connectTimeoutMS = 500;
+        [Tooltip("Interval between connection retry attempts (ms). Kept reliable across scene load hitches.")]
+        [SerializeField] private int _connectTimeoutMS = 1000;
 
         [Tooltip("Inactivity threshold before disconnecting an unresponsive peer (ms).")]
-        [SerializeField] private int _disconnectTimeoutMS = 5000;
+        [SerializeField] private int _disconnectTimeoutMS = 10000;
 
         [Tooltip("Heartbeat frequency to maintain active NAT/UDP hole punching (ms).")]
         [SerializeField] private int _heartbeatTimeoutMS = 500;

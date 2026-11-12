@@ -224,16 +224,88 @@ namespace Scorched.Player
         }
 
         /// <summary>
-        /// Raycasts downward to precisely place the character on solid outdoor concrete geometry.
+        /// Samples active Unity Terrain heights across the character capsule footprint and raycasts downward
+        /// so players always spawn cleanly above sculpted terrain or solid ground surfaces.
         /// </summary>
         public static Vector3 SnapToFloor(Vector3 targetPos)
         {
-            Vector3 rayStart = targetPos + Vector3.up * 2.0f;
-            if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, 8.0f, ~0, QueryTriggerInteraction.Ignore))
+            const float capsuleSampleRadius = 0.40f;
+            const float groundClearance = 0.18f;
+
+            bool hasTerrain = TrySampleMaxTerrainHeight(targetPos.x, targetPos.z, capsuleSampleRadius, out float maxTerrainY);
+            float baseReferenceY = hasTerrain ? Mathf.Max(targetPos.y, maxTerrainY) : targetPos.y;
+
+            // Start 4m above the higher of targetPos.y or terrain height to catch foundations/ramps cleanly without clipping a roof 10m up.
+            Vector3 nearRayStart = new Vector3(targetPos.x, baseReferenceY + 4.0f, targetPos.z);
+            if (Physics.Raycast(nearRayStart, Vector3.down, out RaycastHit hit, 25.0f, ~0, QueryTriggerInteraction.Ignore))
             {
-                return hit.point + Vector3.up * 0.05f;
+                float surfaceY = hasTerrain ? Mathf.Max(maxTerrainY, hit.point.y) : hit.point.y;
+                return new Vector3(targetPos.x, surfaceY + groundClearance, targetPos.z);
             }
+
+            // Fallback: high-altitude downward raycast in case targetPos was far below arbitrary non-Terrain geometry.
+            Vector3 highRayStart = new Vector3(targetPos.x, Mathf.Max(baseReferenceY, 0f) + 150.0f, targetPos.z);
+            if (Physics.Raycast(highRayStart, Vector3.down, out RaycastHit highHit, 300.0f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                float surfaceY = hasTerrain ? Mathf.Max(maxTerrainY, highHit.point.y) : highHit.point.y;
+                return new Vector3(targetPos.x, surfaceY + groundClearance, targetPos.z);
+            }
+
+            if (hasTerrain)
+            {
+                return new Vector3(targetPos.x, maxTerrainY + groundClearance, targetPos.z);
+            }
+
             return targetPos;
+        }
+
+        private static bool TrySampleMaxTerrainHeight(float worldX, float worldZ, float footprintRadius, out float maxTerrainY)
+        {
+            Terrain[] terrains = Terrain.activeTerrains;
+            maxTerrainY = float.NegativeInfinity;
+
+            if (terrains == null || terrains.Length == 0)
+            {
+                Terrain active = Terrain.activeTerrain;
+                if (active == null) return false;
+                terrains = new[] { active };
+            }
+
+            bool found = false;
+            Vector2[] offsets =
+            {
+                Vector2.zero,
+                new Vector2(footprintRadius, 0f),
+                new Vector2(-footprintRadius, 0f),
+                new Vector2(0f, footprintRadius),
+                new Vector2(0f, -footprintRadius)
+            };
+
+            for (int tIdx = 0; tIdx < terrains.Length; tIdx++)
+            {
+                Terrain terrain = terrains[tIdx];
+                if (terrain == null || !terrain.isActiveAndEnabled || terrain.terrainData == null) continue;
+
+                Vector3 tPos = terrain.transform.position;
+                Vector3 tSize = terrain.terrainData.size;
+                if (worldX < tPos.x || worldX > tPos.x + tSize.x || worldZ < tPos.z || worldZ > tPos.z + tSize.z)
+                {
+                    continue;
+                }
+
+                for (int o = 0; o < offsets.Length; o++)
+                {
+                    Vector3 samplePos = new Vector3(worldX + offsets[o].x, 0f, worldZ + offsets[o].y);
+                    float y = terrain.SampleHeight(samplePos) + tPos.y;
+                    if (!found || y > maxTerrainY)
+                    {
+                        maxTerrainY = y;
+                        found = true;
+                    }
+                }
+            }
+
+            return found;
         }
     }
 }

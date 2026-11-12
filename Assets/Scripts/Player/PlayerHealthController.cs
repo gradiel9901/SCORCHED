@@ -6,6 +6,7 @@ using Unity.Netcode.Components;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using Scorched.Combat;
+using Scorched.Inventory;
 using Scorched.Weapons;
 
 namespace Scorched.Player
@@ -42,7 +43,9 @@ namespace Scorched.Player
         [SerializeField] private float _reviveDuration = 5.0f;
         [SerializeField] private float _reviveHealth = 50.0f;
         [SerializeField] private float _reviveRange = 2.5f;
-        [SerializeField] private float _respawnDelay = 4.0f;
+        [SerializeField] private float _respawnDelay = 10.0f;
+        [SerializeField] private float _respawnDelayIncrement = 10.0f;
+        [SerializeField] private GameObject _deathBagPrefab;
 
         #region Network State
         public readonly NetworkVariable<PlayerLifeState> CurrentState = new NetworkVariable<PlayerLifeState>(
@@ -69,6 +72,16 @@ namespace Scorched.Player
             false,
             NetworkVariableReadPermission.Everyone,
             NetworkVariableWritePermission.Owner);
+
+        public readonly NetworkVariable<int> DeathCount = new NetworkVariable<int>(
+            0,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        public readonly NetworkVariable<float> RespawnTimeRemaining = new NetworkVariable<float>(
+            0f,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
         #endregion
 
         #region Standalone / Offline Fallback & Server Runtime State
@@ -77,6 +90,8 @@ namespace Scorched.Player
         private float _localDownedHealth = 100f;
         private float _localReviveProgress = 0f;
         private bool _localIsDownedMoving = false;
+        private int _localDeathCount = 0;
+        private float _localRespawnTimeRemaining = 0f;
 
         private float _downedGraceTimer = 0f;
         private float _reviveTimer = 0f;
@@ -112,6 +127,10 @@ namespace Scorched.Player
         public float CurrentDownedHealthValue => IsSpawned ? DownedHealth.Value : _localDownedHealth;
         public float CurrentReviveProgress => IsSpawned ? ReviveProgress.Value : _localReviveProgress;
         public bool DownedMoving => IsSpawned ? IsDownedMoving.Value : _localIsDownedMoving;
+        public int CurrentDeathCount => IsSpawned ? DeathCount.Value : _localDeathCount;
+        public float CurrentRespawnTimeRemaining => IsSpawned ? RespawnTimeRemaining.Value : _localRespawnTimeRemaining;
+        public float BaseRespawnDelay => _respawnDelay;
+        public float RespawnDelayIncrement => _respawnDelayIncrement;
         public float MaxHealth => _maxHealth;
         public float MaxDownedHealth => _maxDownedHealth;
         public float DownedSpeedMultiplier => _downedSpeedMultiplier;
@@ -173,6 +192,8 @@ namespace Scorched.Player
             Health.OnValueChanged += HandleHealthValueChanged;
             DownedHealth.OnValueChanged += HandleDownedHealthChanged;
             ReviveProgress.OnValueChanged += HandleReviveProgressChanged;
+            DeathCount.OnValueChanged += HandleDeathCountChanged;
+            RespawnTimeRemaining.OnValueChanged += HandleRespawnTimeChanged;
 
             if (IsServer)
             {
@@ -180,6 +201,8 @@ namespace Scorched.Player
                 _localDownedHealth = _maxDownedHealth;
                 _localReviveProgress = 0f;
                 _localState = PlayerLifeState.Alive;
+                _localDeathCount = 0;
+                _localRespawnTimeRemaining = 0f;
                 _downedGraceTimer = 0f;
                 _reviveTimer = 0f;
                 _isRespawning = false;
@@ -190,6 +213,8 @@ namespace Scorched.Player
                 DownedHealth.Value = _maxDownedHealth;
                 ReviveProgress.Value = 0f;
                 CurrentState.Value = PlayerLifeState.Alive;
+                DeathCount.Value = 0;
+                RespawnTimeRemaining.Value = 0f;
             }
 
             ApplyLifeStateEffects(LifeState);
@@ -202,6 +227,8 @@ namespace Scorched.Player
             Health.OnValueChanged -= HandleHealthValueChanged;
             DownedHealth.OnValueChanged -= HandleDownedHealthChanged;
             ReviveProgress.OnValueChanged -= HandleReviveProgressChanged;
+            DeathCount.OnValueChanged -= HandleDeathCountChanged;
+            RespawnTimeRemaining.OnValueChanged -= HandleRespawnTimeChanged;
 
             if (_respawnCoroutine != null)
             {
@@ -218,7 +245,7 @@ namespace Scorched.Player
             bool isLocalOwner = !IsSpawned || IsOwner;
             if (isLocalOwner)
             {
-                if (!_hudSubscribed && Scorched.UI.L4DHUDManager.Instance != null)
+                if (!_hudSubscribed && (Scorched.UI.ScorchedHUDController.Instance != null || Scorched.UI.L4DHUDManager.Instance != null))
                 {
                     _hudSubscribed = true;
                     PushHudUpdate();
@@ -547,6 +574,54 @@ namespace Scorched.Player
             }
         }
 
+        /// <summary>
+        /// Applies continuous environmental / heatstroke damage without PvP attacker restrictions.
+        /// Transitions cleanly through Alive -> Downed -> Dead on the authoritative server (or local offline).
+        /// </summary>
+        public void ApplyEnvironmentalDamage(float damage)
+        {
+            if (IsSpawned && !IsServer) return;
+            if (damage <= 0f || LifeState == PlayerLifeState.Dead) return;
+
+            if (LifeState == PlayerLifeState.Alive)
+            {
+                float newHp = Mathf.Max(0f, CurrentHealthValue - damage);
+                SetHealthAuthoritative(newHp);
+                if (newHp <= 0f)
+                {
+                    TransitionToDownedAuthoritative();
+                }
+            }
+            else if (LifeState == PlayerLifeState.Downed)
+            {
+                if (_downedGraceTimer > 0f) return;
+                float newDownHp = Mathf.Max(0f, CurrentDownedHealthValue - damage);
+                SetDownedHealthAuthoritative(newDownHp);
+                if (newDownHp <= 0f)
+                {
+                    TransitionToDeadAuthoritative();
+                }
+            }
+
+            if (!IsSpawned)
+            {
+                PushHudUpdate();
+            }
+        }
+
+        public void RestoreHealthAuthoritative(float amount)
+        {
+            if (IsSpawned && !IsServer) return;
+            if (amount <= 0f || LifeState != PlayerLifeState.Alive) return;
+
+            float newHp = Mathf.Min(_maxHealth, CurrentHealthValue + amount);
+            SetHealthAuthoritative(newHp);
+            if (!IsSpawned)
+            {
+                PushHudUpdate();
+            }
+        }
+
         private void TransitionToDownedAuthoritative()
         {
             if (LifeState != PlayerLifeState.Alive)
@@ -607,6 +682,15 @@ namespace Scorched.Player
             Debug.Log($"[Lifecycle] Player {OwnerClientId} REVIVED with {_reviveHealth:F0} HP.");
         }
 
+        /// <summary>
+        /// Computes escalating respawn delay: 1st death = 10s, 2nd = 20s, 3rd = 30s, etc.
+        /// </summary>
+        public float CalculateRespawnDelayForDeathNumber(int deathNumber)
+        {
+            int idx = Mathf.Max(1, deathNumber) - 1;
+            return Mathf.Max(0f, _respawnDelay) + idx * Mathf.Max(0f, _respawnDelayIncrement);
+        }
+
         private void TransitionToDeadAuthoritative()
         {
             if (LifeState == PlayerLifeState.Dead || _isRespawning)
@@ -620,6 +704,13 @@ namespace Scorched.Player
             _serverHoldingSelfRevive = false;
             _clientHoldingSelfRevive = false;
             _serverTeammateReviveTargetId = ulong.MaxValue;
+
+            _localDeathCount++;
+            float activeRespawnDelay = CalculateRespawnDelayForDeathNumber(_localDeathCount);
+            SetDeathCountAuthoritative(_localDeathCount);
+            SetRespawnTimeRemainingAuthoritative(activeRespawnDelay);
+
+            SpawnDeathBagAuthoritative();
 
             SetHealthAuthoritative(0f);
             SetDownedHealthAuthoritative(0f);
@@ -635,19 +726,154 @@ namespace Scorched.Player
                 NotifyTransitionLocal(previous, PlayerLifeState.Dead);
             }
 
-            Debug.Log($"[Lifecycle] Player {OwnerClientId} entered DEAD state. Respawning in {_respawnDelay:F1}s...");
+            Debug.Log($"[Lifecycle] Player {OwnerClientId} entered DEAD state (Death #{_localDeathCount}). Respawning in {activeRespawnDelay:F1}s...");
 
             if (_respawnCoroutine != null)
             {
                 StopCoroutine(_respawnCoroutine);
             }
-            _respawnCoroutine = StartCoroutine(RespawnSequenceCoroutine());
+            _respawnCoroutine = StartCoroutine(RespawnSequenceCoroutine(activeRespawnDelay));
         }
 
-        private IEnumerator RespawnSequenceCoroutine()
+        private void SpawnDeathBagAuthoritative()
+        {
+            if (IsSpawned && !IsServer) return;
+
+            var inv = GetComponent<PlayerInventoryController>();
+            var weapon = GetComponent<NetworkWeaponController>();
+
+            List<(ItemId id, int count)> backpackItems = inv != null
+                ? inv.ExtractAllItemsAndClearOnDeathAuthoritative()
+                : new List<(ItemId id, int count)>();
+
+            bool hadWeapon = false;
+            int magAmmo = 0;
+            if (weapon != null)
+            {
+                weapon.CollectAndResetWeaponOnDeathAuthoritative(out hadWeapon, out magAmmo);
+            }
+
+            int totalAmmo = Mathf.Max(0, magAmmo);
+            var nonAmmoItems = new List<(ItemId id, int count)>(backpackItems.Count);
+            for (int i = 0; i < backpackItems.Count; i++)
+            {
+                if (backpackItems[i].id == ItemId.Ammo_762)
+                {
+                    totalAmmo += Mathf.Max(0, backpackItems[i].count);
+                }
+                else
+                {
+                    nonAmmoItems.Add(backpackItems[i]);
+                }
+            }
+
+            var deathLoot = new List<(ItemId id, int count)>(nonAmmoItems.Count + 4);
+            if (hadWeapon)
+            {
+                deathLoot.Add((ItemId.Weapon_AK47, 1));
+            }
+            while (totalAmmo > 0)
+            {
+                int chunk = Mathf.Min(120, totalAmmo);
+                deathLoot.Add((ItemId.Ammo_762, chunk));
+                totalAmmo -= chunk;
+            }
+            for (int i = 0; i < nonAmmoItems.Count; i++)
+            {
+                deathLoot.Add(nonAmmoItems[i]);
+            }
+
+            GameObject prefab = ResolveDeathBagPrefab();
+            if (prefab == null)
+            {
+                Debug.LogWarning("[Lifecycle] Cannot spawn Death Bag: _deathBagPrefab is not assigned.");
+                return;
+            }
+
+            Vector3 spawnPos = ComputeDeathBagGroundPosition(transform.position);
+            Quaternion spawnRot = Quaternion.Euler(0f, transform.eulerAngles.y, 0f);
+            GameObject bagGo = Instantiate(prefab, spawnPos, spawnRot);
+            bagGo.name = $"DeathBag_Player{OwnerClientId}";
+
+            var interactable = bagGo.GetComponent<LootContainerInteractable>() ?? bagGo.AddComponent<LootContainerInteractable>();
+            interactable.ConfigureType(LootContainerType.DeathBag);
+
+            var netObj = bagGo.GetComponent<NetworkObject>();
+            if (netObj != null && NetworkManager.Singleton != null && NetworkManager.Singleton.IsServer && !netObj.IsSpawned)
+            {
+                netObj.Spawn(true);
+            }
+
+            interactable.SetCustomLootAuthoritative(deathLoot);
+        }
+
+        private GameObject ResolveDeathBagPrefab()
+        {
+            if (_deathBagPrefab != null) return _deathBagPrefab;
+            _deathBagPrefab = Resources.Load<GameObject>("Prefabs/Container/Death Bag");
+#if UNITY_EDITOR
+            if (_deathBagPrefab == null)
+            {
+                _deathBagPrefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/Container/Death Bag.prefab");
+            }
+#endif
+            return _deathBagPrefab;
+        }
+
+        private Vector3 ComputeDeathBagGroundPosition(Vector3 playerPos)
+        {
+            Vector3 probeOrigin = playerPos + Vector3.up * 1.25f;
+            var hits = Physics.RaycastAll(probeOrigin, Vector3.down, 8.0f, ~0, QueryTriggerInteraction.Ignore);
+            float closestDist = float.MaxValue;
+            Vector3 closestPoint = playerPos;
+            bool foundHit = false;
+
+            for (int i = 0; i < hits.Length; i++)
+            {
+                var h = hits[i];
+                if (h.collider == null || h.transform.IsChildOf(transform)) continue;
+                if (h.distance < closestDist)
+                {
+                    closestDist = h.distance;
+                    closestPoint = h.point;
+                    foundHit = true;
+                }
+            }
+
+            if (foundHit) return closestPoint;
+
+            var terrain = Terrain.activeTerrain;
+            if (terrain != null)
+            {
+                float ty = terrain.SampleHeight(playerPos) + terrain.transform.position.y;
+                return new Vector3(playerPos.x, ty, playerPos.z);
+            }
+
+            return playerPos;
+        }
+
+        private IEnumerator RespawnSequenceCoroutine(float delaySeconds)
         {
             _isRespawning = true;
-            yield return new WaitForSeconds(_respawnDelay);
+            float remaining = Mathf.Max(0f, delaySeconds);
+            int lastBroadcastSec = Mathf.CeilToInt(remaining);
+            SetRespawnTimeRemainingAuthoritative(remaining);
+
+            while (remaining > 0f)
+            {
+                yield return null;
+                remaining = Mathf.Max(0f, remaining - Time.deltaTime);
+                _localRespawnTimeRemaining = remaining;
+
+                int sec = Mathf.CeilToInt(remaining);
+                if (sec != lastBroadcastSec)
+                {
+                    lastBroadcastSec = sec;
+                    SetRespawnTimeRemainingAuthoritative(remaining);
+                }
+            }
+
+            SetRespawnTimeRemainingAuthoritative(0f);
 
             Vector3 spawnPos = transform.position;
             Quaternion spawnRot = transform.rotation;
@@ -779,6 +1005,18 @@ namespace Scorched.Player
             PushHudUpdate();
         }
 
+        private void HandleDeathCountChanged(int previous, int current)
+        {
+            _localDeathCount = current;
+            PushHudUpdate();
+        }
+
+        private void HandleRespawnTimeChanged(float previous, float current)
+        {
+            _localRespawnTimeRemaining = current;
+            PushHudUpdate();
+        }
+
         private void ApplyLifeStateEffects(PlayerLifeState state)
         {
             bool hitboxActive = state != PlayerLifeState.Dead;
@@ -810,6 +1048,14 @@ namespace Scorched.Player
             {
                 return;
             }
+
+            Scorched.UI.ScorchedHUDController.Instance?.UpdateLifeState(
+                LifeState,
+                CurrentHealthValue,
+                _maxHealth,
+                CurrentDownedHealthValue,
+                _maxDownedHealth,
+                CurrentReviveProgress);
 
             Scorched.UI.L4DHUDManager hud = Scorched.UI.L4DHUDManager.Instance;
             if (hud != null)
@@ -857,6 +1103,24 @@ namespace Scorched.Player
             if (IsSpawned && IsServer)
             {
                 ReviveProgress.Value = value;
+            }
+        }
+
+        private void SetDeathCountAuthoritative(int count)
+        {
+            _localDeathCount = count;
+            if (IsSpawned && IsServer)
+            {
+                DeathCount.Value = count;
+            }
+        }
+
+        private void SetRespawnTimeRemainingAuthoritative(float seconds)
+        {
+            _localRespawnTimeRemaining = seconds;
+            if (IsSpawned && IsServer)
+            {
+                RespawnTimeRemaining.Value = seconds;
             }
         }
     }

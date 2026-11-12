@@ -424,6 +424,11 @@ namespace Scorched.Combat
                 return;
             }
 
+            if (!net.ConnectedClients.ContainsKey(clientId))
+            {
+                return;
+            }
+
             int clientTeam = GetPlayerTeam(clientId);
 
             using (var writer = new FastBufferWriter(FastBufferWriter.GetWriteSize<byte>() * 2 + FastBufferWriter.GetWriteSize<int>() * 3 + FastBufferWriter.GetWriteSize<bool>(), Allocator.Temp))

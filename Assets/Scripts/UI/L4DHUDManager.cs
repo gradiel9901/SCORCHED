@@ -107,6 +107,12 @@ namespace Scorched.UI
         #region Unity Lifecycle
         private void Awake()
         {
+            if (ScorchedHUDController.Instance != null || FindAnyObjectByType<ScorchedHUDController>() != null)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
             if (Instance != null && Instance != this)
             {
                 Destroy(gameObject);
@@ -125,6 +131,12 @@ namespace Scorched.UI
 
         private void Update()
         {
+            if (ScorchedHUDController.Instance != null)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
             if (MainMenuUIManager.IsMenuOpen)
             {
                 if (_hudCanvas != null && _hudCanvas.enabled)

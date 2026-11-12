@@ -12,7 +12,6 @@ using UnityEngine.SceneManagement;
 
 namespace Scorched.EditorTools
 {
-    [InitializeOnLoad]
     public static class ScorchedTownGenerator
     {
         private const string TargetScenePath = "Assets/Scenes/SandBox/Map.unity";
@@ -65,23 +64,6 @@ namespace Scorched.EditorTools
             public List<PrefabDiagnosticRecord> FactoryPrefabDiagnostics = new List<PrefabDiagnosticRecord>();
             public List<string> PlacedBuildingLog = new List<string>();
             public List<string> SpawnPointPositions = new List<string>();
-        }
-
-        static ScorchedTownGenerator()
-        {
-            EditorApplication.delayCall += AutoRunIfPending;
-        }
-
-        private static void AutoRunIfPending()
-        {
-            if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling || EditorApplication.isUpdating)
-                return;
-
-            if (!File.Exists(ReportFilePath))
-            {
-                Debug.Log("[ScorchedTownGenerator] Auto-triggering 5-Phase SCORCHED Town Map Generation Pipeline...");
-                BuildMap();
-            }
         }
 
         [MenuItem("Scorched/Build Post-Apocalyptic Town Map")]

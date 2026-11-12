@@ -73,7 +73,7 @@ namespace Scorched.Player
         [SerializeField] private Key _cycleModeKey = Key.F2;
 
         [Tooltip("Show on-screen debug notification banner when switching modes.")]
-        [SerializeField] private bool _showOnScreenBanner = true;
+        [SerializeField] private bool _showOnScreenBanner = false;
 
         [Header("Option 1: True First-Person Eye Offsets")]
         [SerializeField] private float _opt1EyeForward = 0.05f;
@@ -111,6 +111,7 @@ namespace Scorched.Player
         private PlayerMovement _playerMovement;
         private PlayerHealthController _healthController;
         private PlayerWeaponHandler _weaponHandler;
+        private NetworkWeaponController _weaponController;
         private Animator _animator;
         private SkinnedMeshRenderer _banditRenderer;
 
@@ -265,6 +266,7 @@ namespace Scorched.Player
 
         public void SolveLeftHandIK()
         {
+            if (_weaponController != null && !_weaponController.IsWeaponEquipped) return;
             if (_armL == null || _forearmL == null || _handL == null)
             {
                 CacheComponents();
@@ -413,6 +415,7 @@ namespace Scorched.Player
         {
             if (IsSpawned && !IsOwner) return;
             if (_healthController != null && !_healthController.IsAlive) return;
+            if (_weaponController != null && !_weaponController.IsWeaponEquipped) return;
 
             if (_mode == FPSPerspectiveMode.DedicatedViewmodel_ModernWarfare)
             {
@@ -444,6 +447,7 @@ namespace Scorched.Player
             _playerMovement = GetComponent<PlayerMovement>();
             _healthController = GetComponent<PlayerHealthController>();
             _weaponHandler = GetComponent<PlayerWeaponHandler>();
+            _weaponController = GetComponent<NetworkWeaponController>();
             _animator = GetComponent<Animator>() ?? GetComponentInChildren<Animator>();
             _banditRenderer = GetComponentInChildren<SkinnedMeshRenderer>();
 
@@ -481,6 +485,25 @@ namespace Scorched.Player
                 if (_animator != null && _animator.layerCount > 1 && _animator.GetLayerWeight(1) > 0f)
                 {
                     _animator.SetLayerWeight(1, 0f);
+                }
+                _currentCenterWeight = 0f;
+                return;
+            }
+
+            bool isArmed = _weaponController == null || _weaponController.IsWeaponDrawn;
+            if (!isArmed)
+            {
+                if (_animator != null && _animator.layerCount > 1 && _animator.GetLayerWeight(1) > 0f)
+                {
+                    _animator.SetLayerWeight(1, 0f);
+                }
+                if (_viewmodelRig != null && _viewmodelRig.activeSelf)
+                {
+                    _viewmodelRig.SetActive(false);
+                }
+                if (_weaponHandler != null && _weaponHandler.EquippedWeapon != null && _weaponHandler.EquippedWeapon.gameObject.activeSelf)
+                {
+                    _weaponHandler.EquippedWeapon.gameObject.SetActive(false);
                 }
                 _currentCenterWeight = 0f;
                 return;
@@ -551,6 +574,11 @@ namespace Scorched.Player
         {
             int next = ((int)_mode + 1) % 3;
             CurrentMode = (FPSPerspectiveMode)next;
+        }
+
+        public void RefreshWeaponEquippedState(bool isArmed)
+        {
+            ApplyCurrentModeInternal(showBanner: false);
         }
 
         public void HandleLifeStateChanged(PlayerLifeState newState)
@@ -634,6 +662,7 @@ namespace Scorched.Player
 
         private void ApplyTrueFirstPerson(bool isLocalOwner)
         {
+            bool isArmed = _weaponController == null || _weaponController.IsWeaponDrawn;
             _playerMovement.EyeOffsetForward = _opt1EyeForward;
             _playerMovement.EyeOffsetUp = _opt1EyeUp;
             _playerMovement.EyeOffsetRight = _opt1EyeRight;
@@ -647,7 +676,7 @@ namespace Scorched.Player
 
             if (_weaponHandler != null && _weaponHandler.EquippedWeapon != null)
             {
-                _weaponHandler.EquippedWeapon.gameObject.SetActive(true);
+                _weaponHandler.EquippedWeapon.gameObject.SetActive(isArmed);
             }
             if (_banditRenderer != null)
             {
@@ -692,6 +721,7 @@ namespace Scorched.Player
 
         private void ApplyCombatReady(bool isLocalOwner)
         {
+            bool isArmed = _weaponController == null || _weaponController.IsWeaponDrawn;
             _playerMovement.EyeOffsetForward = _opt2EyeForward;
             _playerMovement.EyeOffsetUp = _opt2EyeUp;
             _playerMovement.EyeOffsetRight = _opt2EyeRight;
@@ -700,13 +730,16 @@ namespace Scorched.Player
 
             if (_animator != null && _animator.layerCount > 1)
             {
-                _animator.SetLayerWeight(1, 1.0f);
-                _animator.CrossFadeInFixedTime(AnimStateFiringRifle, 0.2f, 1);
+                _animator.SetLayerWeight(1, isArmed ? 1.0f : 0.0f);
+                if (isArmed)
+                {
+                    _animator.CrossFadeInFixedTime(AnimStateFiringRifle, 0.2f, 1);
+                }
             }
 
             if (_weaponHandler != null && _weaponHandler.EquippedWeapon != null)
             {
-                _weaponHandler.EquippedWeapon.gameObject.SetActive(true);
+                _weaponHandler.EquippedWeapon.gameObject.SetActive(isArmed);
             }
             if (_banditRenderer != null)
             {
@@ -744,16 +777,17 @@ namespace Scorched.Player
 
         private void ApplyModernWarfareViewmodel(bool isLocalOwner)
         {
+            bool isArmed = _weaponController == null || _weaponController.IsWeaponDrawn;
             _playerMovement.EyeOffsetForward = 0.05f;
             _playerMovement.EyeOffsetUp = 0.02f;
             _playerMovement.EyeOffsetRight = 0f;
             _playerMovement.FieldOfViewProperty = _opt2FOV;
             _playerMovement.NearClipPlane = 0.015f;
 
-            // Keep Upper Body Layer 1 active so 3rd-person shadow & remote observers play Firing Rifle
+            // Keep Upper Body Layer 1 active only while armed so unarmed 3rd-person anims swing naturally
             if (_animator != null && _animator.layerCount > 1)
             {
-                _animator.SetLayerWeight(1, 1.0f);
+                _animator.SetLayerWeight(1, isArmed ? 1.0f : 0.0f);
             }
 
             EnsureViewmodelRig();
@@ -762,7 +796,7 @@ namespace Scorched.Player
             {
                 if (_viewmodelRig != null)
                 {
-                    _viewmodelRig.SetActive(true);
+                    _viewmodelRig.SetActive(isArmed);
                 }
 
                 // Hide 3rd-person full body for the local camera (keep shadows)
@@ -778,7 +812,10 @@ namespace Scorched.Player
                 }
 
                 // Immediately sync rest pose so Editor/Inspector preview is exact
-                UpdateModernWarfareViewmodel(0f, false);
+                if (isArmed)
+                {
+                    UpdateModernWarfareViewmodel(0f, false);
+                }
             }
             else
             {
@@ -793,7 +830,7 @@ namespace Scorched.Player
                 }
                 if (_weaponHandler != null && _weaponHandler.EquippedWeapon != null)
                 {
-                    _weaponHandler.EquippedWeapon.gameObject.SetActive(true);
+                    _weaponHandler.EquippedWeapon.gameObject.SetActive(isArmed);
                 }
             }
         }
@@ -1246,7 +1283,7 @@ namespace Scorched.Player
 
         private void OnGUI()
         {
-            if (!_showOnScreenBanner || _bannerTimer <= 0f) return;
+            if (!_showOnScreenBanner || _bannerTimer <= 0f || Scorched.UI.ScorchedHUDController.Instance != null) return;
 
             GUIStyle style = new GUIStyle(GUI.skin.box);
             style.fontSize = 15;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using UnityEngine;
@@ -42,8 +43,8 @@ namespace Scorched.Networking
         private const string QueryHeader = "SCORCHED_QUERY";
         private const string ResponseHeader = "SCORCHED_RESPONSE";
         private const float RoomTimeoutSeconds = 3.5f;
-        private const float BroadcastInterval = 1.0f;
-        private const float QueryInterval = 1.5f;
+        private const float BroadcastInterval = 0.75f;
+        private const float QueryInterval = 0.75f;
 
         public static LANRoomDiscovery Instance { get; private set; }
 
@@ -270,10 +271,10 @@ namespace Scorched.Networking
 
             try
             {
-                // Send to LAN broadcast
-                _hostSocket.SendTo(data, new IPEndPoint(IPAddress.Broadcast, _discoveryPort));
-                // Send to local loopback (ensures same-machine clients receive it)
-                _hostSocket.SendTo(data, new IPEndPoint(IPAddress.Loopback, _discoveryPort));
+                foreach (IPEndPoint ep in GetDiscoveryBroadcastEndpoints(_discoveryPort))
+                {
+                    try { _hostSocket.SendTo(data, ep); } catch { }
+                }
             }
             catch (Exception ex)
             {
@@ -411,8 +412,10 @@ namespace Scorched.Networking
             byte[] data = Encoding.UTF8.GetBytes(QueryHeader);
             try
             {
-                _clientSocket.SendTo(data, new IPEndPoint(IPAddress.Broadcast, _discoveryPort));
-                _clientSocket.SendTo(data, new IPEndPoint(IPAddress.Loopback, _discoveryPort));
+                foreach (IPEndPoint ep in GetDiscoveryBroadcastEndpoints(_discoveryPort))
+                {
+                    try { _clientSocket.SendTo(data, ep); } catch { }
+                }
             }
             catch (Exception ex)
             {
@@ -451,10 +454,10 @@ namespace Scorched.Networking
                             }
                             else
                             {
-                                // Prefer real LAN IP over local loopback 127.0.0.1
-                                if (existing.HostIp == "127.0.0.1" && room.HostIp != "127.0.0.1")
+                                // Same-machine loopback is always preferred when host is local
+                                if (room.HostIp == "127.0.0.1" && existing.HostIp != "127.0.0.1")
                                 {
-                                    existing.HostIp = room.HostIp;
+                                    existing.HostIp = "127.0.0.1";
                                     listChanged = true;
                                 }
 
@@ -528,6 +531,12 @@ namespace Scorched.Networking
                 hostIp = senderEp.Address.MapToIPv4().ToString();
             }
 
+            // If packet came from this same machine (e.g. LAN/virtual adapter), connect via reliable loopback
+            if (IsLocalMachineIpv4(hostIp))
+            {
+                hostIp = "127.0.0.1";
+            }
+
             room = new DiscoveredRoom
             {
                 RoomId = roomId,
@@ -585,6 +594,88 @@ namespace Scorched.Networking
             }
         }
         #endregion
+
+        private static List<IPEndPoint> GetDiscoveryBroadcastEndpoints(ushort port)
+        {
+            var endpoints = new List<IPEndPoint>();
+            var seen = new HashSet<string>();
+
+            void Add(IPAddress addr)
+            {
+                if (addr == null) return;
+                string key = addr.ToString();
+                if (seen.Add(key))
+                {
+                    endpoints.Add(new IPEndPoint(addr, port));
+                }
+            }
+
+            Add(IPAddress.Loopback);
+            Add(IPAddress.Broadcast);
+
+            try
+            {
+                foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (nic.OperationalStatus != OperationalStatus.Up ||
+                        nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                    {
+                        continue;
+                    }
+
+                    foreach (UnicastIPAddressInformation uni in nic.GetIPProperties().UnicastAddresses)
+                    {
+                        if (uni.Address.AddressFamily != AddressFamily.InterNetwork || uni.IPv4Mask == null)
+                        {
+                            continue;
+                        }
+
+                        byte[] ipBytes = uni.Address.GetAddressBytes();
+                        byte[] maskBytes = uni.IPv4Mask.GetAddressBytes();
+                        byte[] bcastBytes = new byte[4];
+                        for (int i = 0; i < 4; i++)
+                        {
+                            bcastBytes[i] = (byte)(ipBytes[i] | ~maskBytes[i]);
+                        }
+                        Add(new IPAddress(bcastBytes));
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback to Loopback + Global Broadcast already added
+            }
+
+            return endpoints;
+        }
+
+        private static bool IsLocalMachineIpv4(string ipStr)
+        {
+            if (string.IsNullOrEmpty(ipStr)) return false;
+            if (ipStr == "127.0.0.1") return true;
+
+            try
+            {
+                foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (nic.OperationalStatus != OperationalStatus.Up) continue;
+                    foreach (UnicastIPAddressInformation uni in nic.GetIPProperties().UnicastAddresses)
+                    {
+                        if (uni.Address.AddressFamily == AddressFamily.InterNetwork &&
+                            string.Equals(uni.Address.ToString(), ipStr, StringComparison.Ordinal))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore NIC enumeration errors
+            }
+
+            return false;
+        }
 
         private static void CloseSocket(ref Socket socket)
         {

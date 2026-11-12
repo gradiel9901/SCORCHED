@@ -4,7 +4,9 @@ using System.Linq;
 
 using Unity.Netcode;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Scorched.Networking
 {
@@ -24,10 +26,60 @@ namespace Scorched.Networking
         {
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             EditorApplication.delayCall += EnsureAnimatorSpeedMultiplier;
+            EditorApplication.delayCall += EnsureVirtualPlayerOnValidBuildScene;
+        }
+
+        private static void EnsureVirtualPlayerOnValidBuildScene()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                return;
+            }
+
+            try
+            {
+                if (Unity.Multiplayer.PlayMode.CurrentPlayer.IsMainEditor)
+                {
+                    return;
+                }
+            }
+            catch
+            {
+                return;
+            }
+
+            // Sync assets in clone because -DisableDirectoryMonitor stops OS file watching
+            AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
+
+            var enabledScene = EditorBuildSettings.scenes.FirstOrDefault(s => s.enabled && !string.IsNullOrEmpty(s.path));
+            if (enabledScene != null && System.IO.File.Exists(enabledScene.path))
+            {
+                Scene active = SceneManager.GetActiveScene();
+                Terrain terrain = UnityEngine.Object.FindAnyObjectByType<Terrain>();
+                bool terrainNeedsReload = terrain == null || terrain.terrainData == null || terrain.terrainData.terrainLayers == null || terrain.terrainData.terrainLayers.Length == 0 || terrain.materialTemplate == null || terrain.materialTemplate.name != "TerrainLit";
+
+                if (active.path != enabledScene.path || UnityEngine.Object.FindAnyObjectByType<NetworkManager>() == null || terrainNeedsReload)
+                {
+                    Debug.Log($"[MPPMAutoConnector] Restoring/Reloading MPPM virtual player scene to '{enabledScene.path}' (terrainNeedsReload={terrainNeedsReload}).");
+                    EditorSceneManager.OpenScene(enabledScene.path, OpenSceneMode.Single);
+                }
+            }
         }
 
         private static void EnsureAnimatorSpeedMultiplier()
         {
+            try
+            {
+                if (!Unity.Multiplayer.PlayMode.CurrentPlayer.IsMainEditor)
+                {
+                    return;
+                }
+            }
+            catch
+            {
+                // Ignore if MPPM context unavailable
+            }
+
             var controller = AssetDatabase.LoadAssetAtPath<UnityEditor.Animations.AnimatorController>("Assets/Animations/Player/01_Player.controller");
             if (controller == null)
             {
@@ -83,6 +135,10 @@ namespace Scorched.Networking
             {
                 EditorApplication.update -= WaitForNetworkManager;
                 s_TargetRole = null;
+            }
+            else if (state == PlayModeStateChange.EnteredEditMode)
+            {
+                EditorApplication.delayCall += EnsureVirtualPlayerOnValidBuildScene;
             }
         }
 

@@ -977,7 +977,7 @@ MonoBehaviour:
   m_RendererIndex: -1
   m_VolumeLayerMask:
     serializedVersion: 2
-    m_Bits: 1
+    m_Bits: 4294967295
   m_VolumeTrigger: {fileID: 0}
   m_VolumeFrameworkUpdateModeOption: 2
   m_RenderPostProcessing: 1
@@ -3640,6 +3640,18 @@ PrefabInstance:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: ffafe12b73e716849a2c886640920489, type: 3}
       insertIndex: -1
       addedObject: {fileID: 6168759802260581916}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: ffafe12b73e716849a2c886640920489, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 109080774407315868}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: ffafe12b73e716849a2c886640920489, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 4328161751175160414}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: ffafe12b73e716849a2c886640920489, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 7143856790324555114}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: ffafe12b73e716849a2c886640920489, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 2532720016681496514}
     - targetCorrespondingSourceObject: {fileID: 1889657945145093097, guid: ffafe12b73e716849a2c886640920489, type: 3}
       insertIndex: -1
       addedObject: {fileID: 6309732793151396177}
@@ -4142,6 +4154,8 @@ MonoBehaviour:
   _maxStamina: 100
   _currentStamina: 100
   _staminaDrainRate: 22
+  _jumpStaminaCost: 10
+  _disableAutoStaminaRegen: 1
   _staminaRegenRate: 18
 --- !u!114 &611252741573184402
 MonoBehaviour:
@@ -4212,7 +4226,7 @@ MonoBehaviour:
   _firingEyeUpOffset: -0.06
   _adsFOV: 68
   _cycleModeKey: 95
-  _showOnScreenBanner: 1
+  _showOnScreenBanner: 0
   _opt1EyeForward: 0.08
   _opt1EyeUp: -0.12
   _opt1EyeRight: 0.01
@@ -4264,7 +4278,76 @@ MonoBehaviour:
   _reviveDuration: 5
   _reviveHealth: 50
   _reviveRange: 2.5
-  _respawnDelay: 4
+  _respawnDelay: 10
+  _respawnDelayIncrement: 10
+  _deathBagPrefab: {fileID: 1206359169410411126, guid: 69c90b83dfe614046ae8bfc9a5e2c02b, type: 3}
+--- !u!114 &109080774407315868
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5895394578894995462}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f37e13dffc654654ab95660d91c982c5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Scorched.Survival.PlayerThermalController
+  ShowTopMostFoldoutHeaderGroup: 1
+  _maxHydration: 100
+  _maxHeatExposure: 100
+  _heatGainBaseRate: 8
+  _heatCoolShadeRate: 18
+  _hydrationDrainBaseRate: 1.8
+  _hydrationSprintPenaltyRate: 1.2
+  _overheatHeatThreshold: 80
+  _dehydratedThreshold: 20
+  _staminaRegenPenalty: 0.4
+  _heatBurnDamagePerSecond: 3.5
+--- !u!114 &4328161751175160414
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5895394578894995462}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 024d951690fef3a45a3c6095e9e7e56e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Scorched.Inventory.PlayerInventoryController
+  ShowTopMostFoldoutHeaderGroup: 1
+  _dropForwardDistance: 1.25
+--- !u!114 &7143856790324555114
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5895394578894995462}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a4e5a210738d3534882319bfbadbf2b9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Scorched.Inventory.PlayerScavengeInteractor
+  ShowTopMostFoldoutHeaderGroup: 1
+  _interactDistance: 3
+  _interactMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+--- !u!114 &2532720016681496514
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5895394578894995462}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2b8013afa2a61774fb001800aa15b50e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Scorched.Inventory.PlayerHotbarController
+  ShowTopMostFoldoutHeaderGroup: 1
 --- !u!4 &6528942441347455676 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: -8679921383154817045, guid: ffafe12b73e716849a2c886640920489, type: 3}

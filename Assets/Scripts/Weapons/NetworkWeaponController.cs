@@ -39,22 +39,36 @@ namespace Scorched.Weapons
         [SerializeField] private int _magCapacity = 30;
 
         [Tooltip("Current rounds loaded in the active magazine.")]
-        [SerializeField] private int _currentAmmoInMag = 30;
+        [SerializeField] private int _currentAmmoInMag = 0;
 
         [Tooltip("Reserve ammunition available for reloading.")]
-        [SerializeField] private int _reserveAmmo = 120;
+        [SerializeField] private int _reserveAmmo = 0;
 
         [Tooltip("Time required to reload magazine in seconds.")]
         [SerializeField] private float _reloadDuration = 2.2f;
         #endregion
 
+        #region Network Weapon State
+        public readonly NetworkVariable<bool> HasWeaponEquipped = new NetworkVariable<bool>(
+            false,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        public readonly NetworkVariable<int> ReserveAmmo = new NetworkVariable<int>(
+            0,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+        #endregion
+
         #region Runtime State
+        private bool _localHasWeaponEquipped = false;
         private float _nextLocalFireTime = 0f;
         private double _lastServerValidatedFireTime = 0.0;
         private Collider _ownerCollider;
         private Scorched.Player.PlayerWeaponHandler _weaponHandler;
         private Scorched.Player.FPSPerspectiveController _perspectiveController;
         private Scorched.Player.PlayerHealthController _healthController;
+        private Scorched.Inventory.PlayerHotbarController _hotbar;
         private bool _isReloading = false;
         private float _reloadEndTime = 0f;
         private int _shotSequence = 0;
@@ -62,6 +76,18 @@ namespace Scorched.Weapons
         #endregion
 
         #region Public Accessors
+        public bool IsWeaponEquipped => IsSpawned ? HasWeaponEquipped.Value : _localHasWeaponEquipped;
+        public bool IsWeaponDrawn => IsWeaponEquipped && (_hotbar == null || _hotbar.IsWeaponSlotSelected);
+        public int CurrentAmmoInMag => _currentAmmoInMag;
+        public int CurrentReserveAmmo => IsSpawned ? ReserveAmmo.Value : _reserveAmmo;
+        public bool IsReloading => _isReloading;
+        public string CurrentWeaponName => IsWeaponEquipped
+            ? (_currentWeapon != null ? _currentWeapon.WeaponName : "AK-47 TACTICAL")
+            : "UNARMED";
+        public float ReloadProgress01 => _isReloading && _reloadDuration > 0.01f
+            ? Mathf.Clamp01(1f - ((_reloadEndTime - Time.time) / _reloadDuration))
+            : 0f;
+
         public WeaponDataSO CurrentWeapon
         {
             get => _currentWeapon;
@@ -121,6 +147,10 @@ namespace Scorched.Weapons
         private void Awake()
         {
             _ownerCollider = GetComponent<Collider>() ?? GetComponent<CharacterController>();
+            // Enforce empty-handed match start even if prefab had legacy ammo serialized
+            _localHasWeaponEquipped = false;
+            _currentAmmoInMag = 0;
+            _reserveAmmo = 0;
             ResolveDependencies();
         }
 
@@ -128,6 +158,52 @@ namespace Scorched.Weapons
         {
             base.OnNetworkSpawn();
             ResolveDependencies();
+
+            HasWeaponEquipped.OnValueChanged += HandleWeaponEquippedChanged;
+            ReserveAmmo.OnValueChanged += HandleReserveAmmoChanged;
+
+            if (IsServer)
+            {
+                _localHasWeaponEquipped = false;
+                _currentAmmoInMag = 0;
+                _reserveAmmo = 0;
+                HasWeaponEquipped.Value = false;
+                ReserveAmmo.Value = 0;
+            }
+            else
+            {
+                _localHasWeaponEquipped = HasWeaponEquipped.Value;
+                _reserveAmmo = ReserveAmmo.Value;
+            }
+
+            _perspectiveController?.RefreshWeaponEquippedState(IsWeaponEquipped);
+
+            if (IsOwner)
+            {
+                PushAmmoToHUD();
+            }
+        }
+
+        public override void OnNetworkDespawn()
+        {
+            HasWeaponEquipped.OnValueChanged -= HandleWeaponEquippedChanged;
+            ReserveAmmo.OnValueChanged -= HandleReserveAmmoChanged;
+            base.OnNetworkDespawn();
+        }
+
+        private void HandleWeaponEquippedChanged(bool previous, bool current)
+        {
+            _localHasWeaponEquipped = current;
+            _perspectiveController?.RefreshWeaponEquippedState(current);
+            if (IsOwner)
+            {
+                PushAmmoToHUD();
+            }
+        }
+
+        private void HandleReserveAmmoChanged(int previous, int current)
+        {
+            _reserveAmmo = current;
             if (IsOwner)
             {
                 PushAmmoToHUD();
@@ -136,6 +212,7 @@ namespace Scorched.Weapons
 
         private void Start()
         {
+            _perspectiveController?.RefreshWeaponEquippedState(IsWeaponEquipped);
             if (!IsSpawned || IsOwner)
             {
                 PushAmmoToHUD();
@@ -145,6 +222,8 @@ namespace Scorched.Weapons
         private void Update()
         {
             if (IsSpawned && !IsOwner) return;
+            if (!IsWeaponEquipped) return;
+            if (Scorched.Inventory.ScorchedInputGates.IsInventoryOpen) return;
 
             // Handle reload completion
             if (_isReloading)
@@ -166,10 +245,11 @@ namespace Scorched.Weapons
 
         public bool TryReload()
         {
+            if (!IsWeaponDrawn) return false;
             if (_healthController != null && !_healthController.CanPerformCombatActions) return false;
             if (_isReloading) return false;
             if (_currentAmmoInMag >= _magCapacity) return false;
-            if (_reserveAmmo <= 0) return false;
+            if (CurrentReserveAmmo <= 0) return false;
 
             _isReloading = true;
             _reloadEndTime = Time.time + _reloadDuration;
@@ -181,26 +261,190 @@ namespace Scorched.Weapons
         {
             _isReloading = false;
             _reloadEndTime = 0f;
-            _currentAmmoInMag = _magCapacity;
-            _reserveAmmo = Mathf.Max(_reserveAmmo, _magCapacity * 4);
             _nextLocalFireTime = 0f;
+            if (!IsWeaponEquipped)
+            {
+                _currentAmmoInMag = 0;
+                _reserveAmmo = 0;
+            }
+            else if (_currentAmmoInMag <= 0 && CurrentReserveAmmo > 0)
+            {
+                FinishReload();
+            }
+            _perspectiveController?.RefreshWeaponEquippedState(IsWeaponEquipped);
+            PushAmmoToHUD();
+        }
+
+        /// <summary>
+        /// Called authoritatively when crafting the AK-47 from 4 scavenged gun parts.
+        /// Loads initial ammo into the magazine and remaining rounds into ReserveAmmo.
+        /// </summary>
+        /// <summary>
+        /// Authoritative server-side cleanup when a player dies: captures whether they had the AK-47 equipped
+        /// and how many rounds were loaded in its magazine so they can be placed into a Death Bag, then resets
+        /// the player's hands to unarmed / 0 ammo before respawn.
+        /// </summary>
+        public void CollectAndResetWeaponOnDeathAuthoritative(out bool hadWeapon, out int magAmmo)
+        {
+            if (IsSpawned && !IsServer)
+            {
+                hadWeapon = false;
+                magAmmo = 0;
+                return;
+            }
+
+            hadWeapon = IsWeaponEquipped;
+            magAmmo = hadWeapon ? Mathf.Clamp(_currentAmmoInMag, 0, _magCapacity) : 0;
+
+            _localHasWeaponEquipped = false;
+            _currentAmmoInMag = 0;
+            _reserveAmmo = 0;
+            _isReloading = false;
+            _reloadEndTime = 0f;
+            _nextLocalFireTime = 0f;
+
+            if (IsSpawned)
+            {
+                HasWeaponEquipped.Value = false;
+                ReserveAmmo.Value = 0;
+                NotifyWeaponStrippedOnDeathOwnerRpc();
+            }
+
+            _perspectiveController?.RefreshWeaponEquippedState(false);
+            PushAmmoToHUD();
+        }
+
+        [Rpc(SendTo.Owner)]
+        private void NotifyWeaponStrippedOnDeathOwnerRpc()
+        {
+            _localHasWeaponEquipped = false;
+            _currentAmmoInMag = 0;
+            _reserveAmmo = 0;
+            _isReloading = false;
+            _reloadEndTime = 0f;
+            _nextLocalFireTime = 0f;
+            _perspectiveController?.RefreshWeaponEquippedState(false);
+            PushAmmoToHUD();
+        }
+
+        public void EquipCraftedAK47Authoritative(int totalAvailableAmmo)
+        {
+            if (IsSpawned && !IsServer) return;
+
+            _localHasWeaponEquipped = true;
+            int loadToMag = Mathf.Min(_magCapacity, Mathf.Max(0, totalAvailableAmmo));
+            int remainingReserve = Mathf.Max(0, totalAvailableAmmo - loadToMag);
+
+            _currentAmmoInMag = loadToMag;
+            _reserveAmmo = remainingReserve;
+
+            if (IsSpawned)
+            {
+                HasWeaponEquipped.Value = true;
+                ReserveAmmo.Value = remainingReserve;
+                NotifyWeaponCraftedOwnerRpc(loadToMag, remainingReserve);
+            }
+
+            _perspectiveController?.RefreshWeaponEquippedState(true);
+            PushAmmoToHUD();
+        }
+
+        public void AddReserveAmmoAuthoritative(int amount)
+        {
+            if (IsSpawned && !IsServer) return;
+            if (amount <= 0) return;
+
+            _reserveAmmo = Mathf.Max(0, CurrentReserveAmmo + amount);
+            if (IsSpawned)
+            {
+                ReserveAmmo.Value = _reserveAmmo;
+            }
+            if (!IsSpawned || IsOwner)
+            {
+                PushAmmoToHUD();
+            }
+        }
+
+        public void SetReserveAmmoAuthoritative(int totalReserve)
+        {
+            if (IsSpawned && !IsServer) return;
+            int clamped = Mathf.Max(0, totalReserve);
+            _reserveAmmo = clamped;
+            if (IsSpawned)
+            {
+                ReserveAmmo.Value = clamped;
+            }
+            if (!IsSpawned || IsOwner)
+            {
+                PushAmmoToHUD();
+            }
+        }
+
+        [Rpc(SendTo.Owner)]
+        private void NotifyWeaponCraftedOwnerRpc(int magLoaded, int reserveLoaded)
+        {
+            _localHasWeaponEquipped = true;
+            _currentAmmoInMag = magLoaded;
+            _reserveAmmo = reserveLoaded;
+            _isReloading = false;
+            _perspectiveController?.RefreshWeaponEquippedState(true);
             PushAmmoToHUD();
         }
 
         private void FinishReload()
         {
+            int availReserve = CurrentReserveAmmo;
             int needed = _magCapacity - _currentAmmoInMag;
-            int take = Mathf.Min(needed, _reserveAmmo);
+            int take = Mathf.Min(needed, availReserve);
             _currentAmmoInMag += take;
-            _reserveAmmo -= take;
+            _reserveAmmo = Mathf.Max(0, availReserve - take);
             _isReloading = false;
+
+            if (IsSpawned)
+            {
+                if (IsServer)
+                {
+                    ReserveAmmo.Value = _reserveAmmo;
+                    GetComponent<Scorched.Inventory.PlayerInventoryController>()?.ConsumeAmmoForReloadAuthoritative(take);
+                }
+                else
+                {
+                    ConsumeReserveAmmoServerRpc(take);
+                }
+            }
+            else
+            {
+                GetComponent<Scorched.Inventory.PlayerInventoryController>()?.ConsumeAmmoForReloadAuthoritative(take);
+            }
             PushAmmoToHUD();
+        }
+
+        [Rpc(SendTo.Server)]
+        private void ConsumeReserveAmmoServerRpc(int amount)
+        {
+            if (amount <= 0) return;
+            int next = Mathf.Max(0, ReserveAmmo.Value - amount);
+            ReserveAmmo.Value = next;
+            _reserveAmmo = next;
+            if (!IsOwner)
+            {
+                _currentAmmoInMag = Mathf.Min(_magCapacity, _currentAmmoInMag + amount);
+            }
+            GetComponent<Scorched.Inventory.PlayerInventoryController>()?.ConsumeAmmoForReloadAuthoritative(amount);
         }
 
         public void PushAmmoToHUD()
         {
+            if (!IsWeaponEquipped)
+            {
+                Scorched.UI.ScorchedHUDController.Instance?.UpdateAmmo(0, CurrentReserveAmmo, false, "UNARMED");
+                Scorched.UI.L4DHUDManager.Instance?.UpdateAmmo(0, CurrentReserveAmmo, false, "UNARMED");
+                return;
+            }
+
             string name = _currentWeapon != null ? _currentWeapon.WeaponName : "AK-47 TACTICAL";
-            Scorched.UI.L4DHUDManager.Instance?.UpdateAmmo(_currentAmmoInMag, _reserveAmmo, _isReloading, name);
+            Scorched.UI.ScorchedHUDController.Instance?.UpdateAmmo(_currentAmmoInMag, CurrentReserveAmmo, _isReloading, name);
+            Scorched.UI.L4DHUDManager.Instance?.UpdateAmmo(_currentAmmoInMag, CurrentReserveAmmo, _isReloading, name);
         }
 
         private void ResolveDependencies()
@@ -208,6 +452,7 @@ namespace Scorched.Weapons
             _weaponHandler = GetComponent<Scorched.Player.PlayerWeaponHandler>();
             _perspectiveController = GetComponent<Scorched.Player.FPSPerspectiveController>();
             _healthController = GetComponent<Scorched.Player.PlayerHealthController>();
+            _hotbar = GetComponent<Scorched.Inventory.PlayerHotbarController>();
 
             // Auto-link aim camera
             if (_aimCameraTransform == null)
@@ -279,6 +524,7 @@ namespace Scorched.Weapons
         public bool TryFire(bool isFiring)
         {
             if (!isFiring) return false;
+            if (!IsWeaponDrawn) return false;
             if (_currentWeapon == null) return false;
             if (_healthController != null && !_healthController.CanPerformCombatActions) return false;
 
@@ -496,6 +742,7 @@ namespace Scorched.Weapons
         [Rpc(SendTo.Server)]
         private void RequestFireRpc(Vector3 origin, Vector3 direction, double clientTimestamp)
         {
+            if (!IsWeaponEquipped) return;
             if (_currentWeapon == null) return;
             if (_healthController != null && !_healthController.CanPerformCombatActions) return;
 
@@ -515,6 +762,11 @@ namespace Scorched.Weapons
                 return;
             }
             _lastServerValidatedFireTime = currentTime;
+
+            if (!IsOwner && _currentAmmoInMag > 0)
+            {
+                _currentAmmoInMag--;
+            }
 
             // 2. Anti-Cheat: Validate muzzle origin distance from player transform
             if (Vector3.Distance(origin, transform.position) > MaxOriginToleranceMeters)

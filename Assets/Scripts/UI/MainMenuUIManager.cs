@@ -53,6 +53,8 @@ namespace Scorched.UI
 
         private bool _isMainMenuOpen = true;
         private bool _isPauseMenuOpen = false;
+        private bool _isConnectingAsClient = false;
+        private Coroutine _connectCoroutine;
 
         // Create Room controls
         private InputField _roomNameInput;
@@ -175,6 +177,12 @@ namespace Scorched.UI
 
             if (keyboard.escapeKey.wasPressedThisFrame)
             {
+                if (Scorched.Inventory.ScorchedInputGates.IsInventoryOpen ||
+                    Scorched.Inventory.ScorchedInputGates.LastUiClosedFrame == Time.frameCount)
+                {
+                    return;
+                }
+
                 bool isNetworkActive = NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening;
 
                 if (_isPauseMenuOpen)
@@ -364,8 +372,18 @@ namespace Scorched.UI
 
                 // 4. Start Host
                 Debug.Log($"[MainMenu] Hosting room '{roomName}' [{_selectedGameMode}] on port {port} (Max: {maxPlayers})...");
-                netManager.StartHost();
-                HideAllMenus();
+                if (netManager.StartHost())
+                {
+                    HideAllMenus();
+                }
+                else
+                {
+                    Debug.LogError($"[MainMenu] Failed to start Host on port {port}. Is another instance already using UDP port {port}?");
+                    if (LANRoomDiscovery.Instance != null)
+                    {
+                        LANRoomDiscovery.Instance.StopAdvertising();
+                    }
+                }
             }
             else
             {
@@ -401,7 +419,35 @@ namespace Scorched.UI
             if (netManager == null)
             {
                 Debug.LogError("[MainMenu] NetworkManager.Singleton is null! Cannot connect.");
+                if (_lobbyStatusText != null)
+                {
+                    _lobbyStatusText.text = "<color=#FF5555>NetworkManager missing in active scene.</color>";
+                }
                 return;
+            }
+
+            if (_connectCoroutine != null)
+            {
+                StopCoroutine(_connectCoroutine);
+            }
+            _connectCoroutine = StartCoroutine(ConnectClientCoroutine(netManager, ip, port));
+        }
+
+        private System.Collections.IEnumerator ConnectClientCoroutine(NetworkManager netManager, string ip, ushort port)
+        {
+            if (netManager.IsListening)
+            {
+                netManager.Shutdown();
+            }
+
+            while (netManager != null && (netManager.ShutdownInProgress || netManager.IsListening))
+            {
+                yield return null;
+            }
+
+            if (netManager == null)
+            {
+                yield break;
             }
 
             if (LANRoomDiscovery.Instance != null)
@@ -412,19 +458,39 @@ namespace Scorched.UI
             var optimizer = netManager.GetComponent<UnityTransportOptimizer>();
             if (optimizer != null)
             {
-                optimizer.SetConnectionData(ip, port);
+                optimizer.SetConnectionData(ip, port, "0.0.0.0");
             }
             else
             {
                 var transport = netManager.GetComponent<Unity.Netcode.Transports.UTP.UnityTransport>();
                 if (transport != null)
                 {
-                    transport.SetConnectionData(ip, port);
+                    transport.SetConnectionData(ip, port, "0.0.0.0");
                 }
             }
 
-            netManager.StartClient();
-            HideAllMenus();
+            _isConnectingAsClient = true;
+            if (_lobbyStatusText != null)
+            {
+                _lobbyStatusText.text = $"Connecting to <color=#F5A623>{ip}:{port}</color>...";
+            }
+
+            bool started = netManager.StartClient();
+            if (!started)
+            {
+                _isConnectingAsClient = false;
+                Debug.LogError($"[MainMenu] StartClient() failed for {ip}:{port}.");
+                if (_lobbyStatusText != null)
+                {
+                    _lobbyStatusText.text = $"<color=#FF5555>Could not connect to {ip}:{port}. Check host IP/port.</color>";
+                }
+                if (LANRoomDiscovery.Instance != null)
+                {
+                    LANRoomDiscovery.Instance.StartListening();
+                }
+            }
+
+            _connectCoroutine = null;
         }
 
         public void DisconnectSession()
@@ -471,6 +537,7 @@ namespace Scorched.UI
             var netManager = NetworkManager.Singleton;
             if (netManager != null && clientId == netManager.LocalClientId)
             {
+                _isConnectingAsClient = false;
                 Debug.Log("[MainMenu] Local client successfully connected.");
                 HideAllMenus();
             }
@@ -487,8 +554,24 @@ namespace Scorched.UI
             var netManager = NetworkManager.Singleton;
             if (netManager != null && clientId == netManager.LocalClientId)
             {
-                Debug.LogWarning("[MainMenu] Local client disconnected.");
+                string reason = netManager.DisconnectReason;
+                bool failedWhileConnecting = _isConnectingAsClient;
+                _isConnectingAsClient = false;
+
+                Debug.LogWarning($"[MainMenu] Local client disconnected. Reason: {(string.IsNullOrWhiteSpace(reason) ? "Timed out or closed" : reason)}");
                 DisconnectSession();
+
+                if (failedWhileConnecting || !string.IsNullOrWhiteSpace(reason))
+                {
+                    OpenLobby();
+                    if (_lobbyStatusText != null)
+                    {
+                        string displayReason = string.IsNullOrWhiteSpace(reason)
+                            ? "Connection timed out or host unreachable."
+                            : reason;
+                        _lobbyStatusText.text = $"<color=#FF5555>Connection failed: {displayReason}</color>";
+                    }
+                }
             }
 
             if (LANRoomDiscovery.Instance != null && netManager != null && netManager.IsServer)
