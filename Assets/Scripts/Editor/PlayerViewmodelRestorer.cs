@@ -15,7 +15,7 @@ namespace Scorched.EditorTools
     public static class PlayerViewmodelRestorer
     {
         private const string PrefabPath = "Assets/Prefabs/ScorchedPlayer.prefab";
-        private const string MainScenePath = "Assets/Scenes/Main.unity";
+        private const string MainScenePath = "Assets/Scenes/Level 0 - Test Environment.unity";
 
         [MenuItem("Scorched/Setup/Restore Native Player Animation & Weapon Setup")]
         public static void RestoreNativeMenu()

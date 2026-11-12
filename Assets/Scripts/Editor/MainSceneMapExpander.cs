@@ -14,7 +14,7 @@ namespace Scorched.EditorTools
 {
     public static class MainSceneMapExpander
     {
-        private const string MainScenePath = "Assets/Scenes/Main.unity";
+        private const string MainScenePath = "Assets/Scenes/Level 0 - Test Environment.unity";
         private const string ExpandedTerrainAssetPath = "Assets/Scenes/Main_Expanded_TerrainData.asset";
         private const string ReportPath = "Logs/MainSceneExpansionReport.json";
 

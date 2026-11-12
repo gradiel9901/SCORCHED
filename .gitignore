@@ -108,4 +108,7 @@ InitTestScene*.unity*
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
 
+# Clean scene merge backups (kept outside Assets)
+/_SceneBackups/
+
 
