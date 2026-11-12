@@ -53,8 +53,12 @@ namespace Scorched.Weapons
         private double _lastServerValidatedFireTime = 0.0;
         private Collider _ownerCollider;
         private Scorched.Player.PlayerWeaponHandler _weaponHandler;
+        private Scorched.Player.FPSPerspectiveController _perspectiveController;
+        private Scorched.Player.PlayerHealthController _healthController;
         private bool _isReloading = false;
         private float _reloadEndTime = 0f;
+        private int _shotSequence = 0;
+        private int _serverShotSequence = 0;
         #endregion
 
         #region Public Accessors
@@ -68,6 +72,12 @@ namespace Scorched.Weapons
         {
             get
             {
+                // Prioritize active perspective muzzle (viewmodel or aligned world weapon)
+                if (_perspectiveController == null) _perspectiveController = GetComponent<Scorched.Player.FPSPerspectiveController>();
+                if (_perspectiveController != null && _perspectiveController.ActiveMuzzlePoint != null)
+                {
+                    return _perspectiveController.ActiveMuzzlePoint;
+                }
                 if (_muzzlePoint != null) return _muzzlePoint;
                 if (_weaponHandler != null)
                 {
@@ -86,7 +96,7 @@ namespace Scorched.Weapons
             if (_weaponHandler != null) return _weaponHandler.GetMuzzlePosition();
             if (_aimCameraTransform != null)
             {
-                return _aimCameraTransform.position + _aimCameraTransform.forward * 0.6f - _aimCameraTransform.up * 0.12f + _aimCameraTransform.right * 0.1f;
+                return _aimCameraTransform.position + _aimCameraTransform.forward * 0.6f;
             }
             return transform.position + transform.forward * 0.5f + Vector3.up * 1.5f;
         }
@@ -156,6 +166,7 @@ namespace Scorched.Weapons
 
         public bool TryReload()
         {
+            if (_healthController != null && !_healthController.CanPerformCombatActions) return false;
             if (_isReloading) return false;
             if (_currentAmmoInMag >= _magCapacity) return false;
             if (_reserveAmmo <= 0) return false;
@@ -164,6 +175,16 @@ namespace Scorched.Weapons
             _reloadEndTime = Time.time + _reloadDuration;
             PushAmmoToHUD();
             return true;
+        }
+
+        public void ResetWeaponAfterRespawn()
+        {
+            _isReloading = false;
+            _reloadEndTime = 0f;
+            _currentAmmoInMag = _magCapacity;
+            _reserveAmmo = Mathf.Max(_reserveAmmo, _magCapacity * 4);
+            _nextLocalFireTime = 0f;
+            PushAmmoToHUD();
         }
 
         private void FinishReload()
@@ -185,6 +206,8 @@ namespace Scorched.Weapons
         private void ResolveDependencies()
         {
             _weaponHandler = GetComponent<Scorched.Player.PlayerWeaponHandler>();
+            _perspectiveController = GetComponent<Scorched.Player.FPSPerspectiveController>();
+            _healthController = GetComponent<Scorched.Player.PlayerHealthController>();
 
             // Auto-link aim camera
             if (_aimCameraTransform == null)
@@ -257,6 +280,7 @@ namespace Scorched.Weapons
         {
             if (!isFiring) return false;
             if (_currentWeapon == null) return false;
+            if (_healthController != null && !_healthController.CanPerformCombatActions) return false;
 
             // Only network owner controls local firing input
             if (IsSpawned && !IsOwner) return false;
@@ -297,6 +321,11 @@ namespace Scorched.Weapons
         #region Step 1: Local Client Prediction & Firing
         private void ExecuteDischarge()
         {
+            if (_perspectiveController != null)
+            {
+                _perspectiveController.PrepareViewmodelForFiring();
+            }
+
             Vector3 muzzleOrigin = GetMuzzlePosition();
 
             // Calculate aim target point via camera center raycast
@@ -304,27 +333,19 @@ namespace Scorched.Weapons
 
             // Start ray slightly forward from camera lens to avoid intersecting own colliders
             Vector3 rayStart = aimTrans.position + (aimTrans.forward * 0.45f);
-            Ray aimRay = new Ray(rayStart, aimTrans.forward);
-
             Vector3 targetPoint = rayStart + (aimTrans.forward * _currentWeapon.MaxRange);
 
-            // Filter out own player and any child colliders
-            RaycastHit[] hits = Physics.RaycastAll(aimRay, _currentWeapon.MaxRange, _hitMask, QueryTriggerInteraction.Ignore);
-            if (hits != null && hits.Length > 0)
+            if (CombatHitResolver.TryRaycastFirstCombatHit(
+                rayStart,
+                aimTrans.forward,
+                _currentWeapon.MaxRange,
+                _hitMask,
+                transform,
+                out RaycastHit aimHit,
+                out _,
+                out _))
             {
-                float nearestDist = float.MaxValue;
-                for (int i = 0; i < hits.Length; i++)
-                {
-                    var h = hits[i];
-                    if (h.collider != null && h.collider.transform.root != transform)
-                    {
-                        if (h.distance < nearestDist)
-                        {
-                            nearestDist = h.distance;
-                            targetPoint = h.point;
-                        }
-                    }
-                }
+                targetPoint = aimHit.point;
             }
 
             // Apply conical spread divergence
@@ -346,15 +367,28 @@ namespace Scorched.Weapons
             }
             else
             {
-                // Standalone / offline test mode: execute immediate damage resolution
+                // Standalone / offline test mode: execute immediate anatomical damage resolution
+                int localShotId = ++_shotSequence;
                 if (_currentWeapon.IsHitscan)
                 {
-                    if (Physics.Raycast(muzzleOrigin, fireDirection, out RaycastHit hit, _currentWeapon.MaxRange, _hitMask, QueryTriggerInteraction.Ignore))
+                    if (CombatHitResolver.TryRaycastFirstCombatHit(
+                        muzzleOrigin,
+                        fireDirection,
+                        _currentWeapon.MaxRange,
+                        _hitMask,
+                        transform,
+                        out RaycastHit hit,
+                        out IDamageable damageable,
+                        out BodyPartHitbox hitbox))
                     {
-                        if (hit.collider.transform.root != transform)
-                        {
-                            hit.collider.GetComponentInParent<IDamageable>()?.ApplyCombatHit(_currentWeapon.BaseDamage, _currentWeapon.HydrationDrainOnHit, 0, hit.point);
-                        }
+                        CombatHitResolver.ApplyResolvedHit(
+                            damageable,
+                            hitbox,
+                            _currentWeapon.BaseDamage,
+                            _currentWeapon.HydrationDrainOnHit,
+                            0,
+                            hit.point,
+                            localShotId);
                     }
                 }
             }
@@ -387,6 +421,12 @@ namespace Scorched.Weapons
         {
             if (_currentWeapon == null) return;
 
+            // Trigger viewmodel recoil kick if Modern Warfare mode is active
+            if (_perspectiveController != null)
+            {
+                _perspectiveController.ApplyViewmodelRecoilKick();
+            }
+
             // Trigger muzzle flash at gun barrel tip
             if (BulletVisualPoolManager.Instance != null)
             {
@@ -395,9 +435,17 @@ namespace Scorched.Weapons
 
             if (_currentWeapon.IsHitscan)
             {
-                // Hitscan: determine endpoint via instantaneous raycast
+                // Hitscan: determine visual endpoint cleanly via anatomical combat resolver
                 Vector3 endPoint;
-                if (Physics.Raycast(origin, direction, out RaycastHit hit, _currentWeapon.MaxRange, _hitMask, QueryTriggerInteraction.Ignore))
+                if (CombatHitResolver.TryRaycastFirstCombatHit(
+                    origin,
+                    direction,
+                    _currentWeapon.MaxRange,
+                    _hitMask,
+                    transform,
+                    out RaycastHit hit,
+                    out _,
+                    out _))
                 {
                     endPoint = hit.point;
 
@@ -432,7 +480,8 @@ namespace Scorched.Weapons
                         IsSpawned ? OwnerClientId : 0,
                         isServerAuthoritative: false,
                         _hitMask,
-                        attachVisualTrail: true
+                        attachVisualTrail: true,
+                        ignoredRoot: transform
                     );
                 }
             }
@@ -448,6 +497,7 @@ namespace Scorched.Weapons
         private void RequestFireRpc(Vector3 origin, Vector3 direction, double clientTimestamp)
         {
             if (_currentWeapon == null) return;
+            if (_healthController != null && !_healthController.CanPerformCombatActions) return;
 
             // Reject server firing if combat is locked out (unequal teams)
             if (Scorched.Combat.NetworkMatchManager.Instance != null && !Scorched.Combat.NetworkMatchManager.Instance.IsCombatActive)
@@ -473,32 +523,32 @@ namespace Scorched.Weapons
                 origin = transform.position + Vector3.up * 1.5f + transform.forward * 0.5f;
             }
 
-            // 3. Authoritative damage resolution
+            // 3. Authoritative damage resolution (anatomical hitboxes, single-hit per shot)
+            int serverShotId = ++_serverShotSequence;
             if (_currentWeapon.IsHitscan)
             {
-                RaycastHit[] hits = Physics.RaycastAll(origin, direction, _currentWeapon.MaxRange, _hitMask, QueryTriggerInteraction.Ignore);
-                if (hits != null && hits.Length > 0)
+                if (CombatHitResolver.TryRaycastFirstCombatHit(
+                    origin,
+                    direction,
+                    _currentWeapon.MaxRange,
+                    _hitMask,
+                    transform,
+                    out RaycastHit hit,
+                    out IDamageable damageable,
+                    out BodyPartHitbox hitbox))
                 {
-                    Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
-                    for (int i = 0; i < hits.Length; i++)
-                    {
-                        var hit = hits[i];
-                        if (hit.collider != null && hit.collider.transform.root != transform)
-                        {
-                            // Apply health damage and tactical hydration drain
-                            var damageable = hit.collider.GetComponentInParent<IDamageable>();
-                            if (damageable != null)
-                            {
-                                damageable.ApplyCombatHit(_currentWeapon.BaseDamage, _currentWeapon.HydrationDrainOnHit, OwnerClientId, hit.point);
-                            }
+                    CombatHitResolver.ApplyResolvedHit(
+                        damageable,
+                        hitbox,
+                        _currentWeapon.BaseDamage,
+                        _currentWeapon.HydrationDrainOnHit,
+                        OwnerClientId,
+                        hit.point,
+                        serverShotId);
 
-                            // Physical impulse on rigidbodies
-                            if (hit.rigidbody != null && !hit.rigidbody.isKinematic)
-                            {
-                                hit.rigidbody.AddForceAtPosition(direction * (_currentWeapon.BaseDamage * 0.5f), hit.point, ForceMode.Impulse);
-                            }
-                            break;
-                        }
+                    if (hit.rigidbody != null && !hit.rigidbody.isKinematic)
+                    {
+                        hit.rigidbody.AddForceAtPosition(direction * (_currentWeapon.BaseDamage * 0.5f), hit.point, ForceMode.Impulse);
                     }
                 }
             }
@@ -516,7 +566,9 @@ namespace Scorched.Weapons
                         OwnerClientId,
                         isServerAuthoritative: true,
                         _hitMask,
-                        attachVisualTrail: false // Server does not need visual trail rendering
+                        attachVisualTrail: false,
+                        ignoredRoot: transform,
+                        shotId: serverShotId
                     );
                 }
             }

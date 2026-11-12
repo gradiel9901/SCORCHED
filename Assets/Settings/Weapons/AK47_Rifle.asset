@@ -19,5 +19,5 @@ MonoBehaviour:
   _gravityMultiplier: 1
   _spreadAngle: 0.45
   _fireRateRPM: 600
-  _baseDamage: 34
+  _baseDamage: 22
   _hydrationDrainOnHit: 15

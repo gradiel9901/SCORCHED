@@ -79,9 +79,24 @@ namespace Scorched.UI
         private Text _ammoReserveText;
         private Text _ammoStatusText;
 
+        // LifeState / DBNO & Dead UI (Bottom Center)
+        private GameObject _crosshairRoot;
+        private GameObject _lifeStateBannerRoot;
+        private Text _lifeStateTitleText;
+        private Text _lifeStatePromptText;
+        private RectTransform _bleedoutBarFill;
+        private Image _bleedoutBarImage;
+        private GameObject _reviveBarRoot;
+        private RectTransform _reviveBarFill;
+        private Text _reviveValueText;
+
         // Runtime Vitals Cache
         private float _cachedHealth = 100f;
         private float _cachedMaxHealth = 100f;
+        private float _cachedDownedHealth = 100f;
+        private float _cachedMaxDownedHealth = 100f;
+        private float _cachedReviveProgress = 0f;
+        private Scorched.Player.PlayerLifeState _cachedLifeState = Scorched.Player.PlayerLifeState.Alive;
         private float _cachedStamina = 100f;
         private float _cachedMaxStamina = 100f;
         private int _cachedMagAmmo = 30;
@@ -161,6 +176,23 @@ namespace Scorched.UI
         {
             _cachedHealth = Mathf.Max(0f, currentHealth);
             _cachedMaxHealth = Mathf.Max(1f, maxHealth);
+            RefreshVitalsUI();
+        }
+
+        public void UpdateLifeState(
+            Scorched.Player.PlayerLifeState state,
+            float health,
+            float maxHealth,
+            float downedHealth,
+            float maxDownedHealth,
+            float reviveProgress)
+        {
+            _cachedLifeState = state;
+            _cachedHealth = Mathf.Max(0f, health);
+            _cachedMaxHealth = Mathf.Max(1f, maxHealth);
+            _cachedDownedHealth = Mathf.Max(0f, downedHealth);
+            _cachedMaxDownedHealth = Mathf.Max(1f, maxDownedHealth);
+            _cachedReviveProgress = Mathf.Clamp01(reviveProgress);
             RefreshVitalsUI();
         }
 
@@ -373,6 +405,9 @@ namespace Scorched.UI
             // 7. Tactical Ammo & Weapon Status (Bottom Right)
             BuildAmmoPanel(canvasGo.transform);
 
+            // 8. DBNO / Self-Revive / KIA Respawn Overlay (Bottom Center)
+            BuildLifeStateOverlay(canvasGo.transform);
+
             // Initial UI Refresh
             RefreshVitalsUI();
             RefreshAmmoUI("AK-47 TACTICAL");
@@ -381,6 +416,7 @@ namespace Scorched.UI
         private void BuildCrosshair(Transform parent)
         {
             var crosshairRoot = CreateUIObject("CrosshairRoot", parent);
+            _crosshairRoot = crosshairRoot;
             var rect = crosshairRoot.GetComponent<RectTransform>();
             rect.anchorMin = new Vector2(0.5f, 0.5f);
             rect.anchorMax = new Vector2(0.5f, 0.5f);
@@ -839,29 +875,226 @@ namespace Scorched.UI
             _ammoStatusText.text = "[ READY ]";
         }
 
+        private void BuildLifeStateOverlay(Transform parent)
+        {
+            _lifeStateBannerRoot = CreateUIObject("LifeStateBanner", parent);
+            var bannerRt = _lifeStateBannerRoot.GetComponent<RectTransform>();
+            bannerRt.anchorMin = new Vector2(0.5f, 0.72f);
+            bannerRt.anchorMax = new Vector2(0.5f, 0.72f);
+            bannerRt.pivot = new Vector2(0.5f, 0.5f);
+            bannerRt.anchoredPosition = Vector2.zero;
+            bannerRt.sizeDelta = new Vector2(460f, 118f);
+
+            var bg = _lifeStateBannerRoot.AddComponent<Image>();
+            bg.sprite = ProceduralUISprites.GetRoundedBoxSprite();
+            bg.type = Image.Type.Sliced;
+            bg.color = L4DPanelDark;
+            bg.raycastTarget = false;
+
+            var borderGo = CreateUIObject("Border", _lifeStateBannerRoot.transform);
+            var borderRt = borderGo.GetComponent<RectTransform>();
+            borderRt.anchorMin = Vector2.zero;
+            borderRt.anchorMax = Vector2.one;
+            borderRt.offsetMin = Vector2.zero;
+            borderRt.offsetMax = Vector2.zero;
+            var borderImg = borderGo.AddComponent<Image>();
+            borderImg.sprite = ProceduralUISprites.GetBorderBoxSprite();
+            borderImg.type = Image.Type.Sliced;
+            borderImg.color = L4DBorder;
+            borderImg.raycastTarget = false;
+
+            var titleGo = CreateUIObject("Title", _lifeStateBannerRoot.transform);
+            var titleRt = titleGo.GetComponent<RectTransform>();
+            titleRt.anchorMin = new Vector2(0f, 1f);
+            titleRt.anchorMax = new Vector2(1f, 1f);
+            titleRt.pivot = new Vector2(0.5f, 1f);
+            titleRt.anchoredPosition = new Vector2(0f, -10f);
+            titleRt.sizeDelta = new Vector2(-24f, 26f);
+            _lifeStateTitleText = titleGo.AddComponent<Text>();
+            _lifeStateTitleText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            _lifeStateTitleText.fontSize = 18;
+            _lifeStateTitleText.fontStyle = FontStyle.Bold;
+            _lifeStateTitleText.alignment = TextAnchor.MiddleCenter;
+            _lifeStateTitleText.color = L4DYellow;
+            _lifeStateTitleText.raycastTarget = false;
+
+            var promptGo = CreateUIObject("Prompt", _lifeStateBannerRoot.transform);
+            var promptRt = promptGo.GetComponent<RectTransform>();
+            promptRt.anchorMin = new Vector2(0f, 1f);
+            promptRt.anchorMax = new Vector2(1f, 1f);
+            promptRt.pivot = new Vector2(0.5f, 1f);
+            promptRt.anchoredPosition = new Vector2(0f, -40f);
+            promptRt.sizeDelta = new Vector2(-24f, 22f);
+            _lifeStatePromptText = promptGo.AddComponent<Text>();
+            _lifeStatePromptText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            _lifeStatePromptText.fontSize = 13;
+            _lifeStatePromptText.fontStyle = FontStyle.Bold;
+            _lifeStatePromptText.alignment = TextAnchor.MiddleCenter;
+            _lifeStatePromptText.color = L4DTextDim;
+            _lifeStatePromptText.raycastTarget = false;
+
+            var bleedBgGo = CreateUIObject("BleedoutBarBg", _lifeStateBannerRoot.transform);
+            var bleedBgRt = bleedBgGo.GetComponent<RectTransform>();
+            bleedBgRt.anchorMin = new Vector2(0f, 0f);
+            bleedBgRt.anchorMax = new Vector2(1f, 0f);
+            bleedBgRt.pivot = new Vector2(0.5f, 0f);
+            bleedBgRt.anchoredPosition = new Vector2(0f, 34f);
+            bleedBgRt.sizeDelta = new Vector2(-36f, 12f);
+            var bleedBgImg = bleedBgGo.AddComponent<Image>();
+            bleedBgImg.color = new Color(0f, 0f, 0f, 0.7f);
+            bleedBgImg.raycastTarget = false;
+
+            var bleedFillGo = CreateUIObject("BleedoutBarFill", bleedBgGo.transform);
+            _bleedoutBarFill = bleedFillGo.GetComponent<RectTransform>();
+            _bleedoutBarFill.anchorMin = Vector2.zero;
+            _bleedoutBarFill.anchorMax = Vector2.one;
+            _bleedoutBarFill.offsetMin = Vector2.zero;
+            _bleedoutBarFill.offsetMax = Vector2.zero;
+            _bleedoutBarImage = bleedFillGo.AddComponent<Image>();
+            _bleedoutBarImage.color = L4DRed;
+            _bleedoutBarImage.raycastTarget = false;
+
+            _reviveBarRoot = CreateUIObject("ReviveBar", _lifeStateBannerRoot.transform);
+            var revRt = _reviveBarRoot.GetComponent<RectTransform>();
+            revRt.anchorMin = new Vector2(0f, 0f);
+            revRt.anchorMax = new Vector2(1f, 0f);
+            revRt.pivot = new Vector2(0.5f, 0f);
+            revRt.anchoredPosition = new Vector2(0f, 10f);
+            revRt.sizeDelta = new Vector2(-36f, 18f);
+            var revBgImg = _reviveBarRoot.AddComponent<Image>();
+            revBgImg.color = new Color(0f, 0f, 0f, 0.7f);
+            revBgImg.raycastTarget = false;
+
+            var revFillGo = CreateUIObject("ReviveBarFill", _reviveBarRoot.transform);
+            _reviveBarFill = revFillGo.GetComponent<RectTransform>();
+            _reviveBarFill.anchorMin = Vector2.zero;
+            _reviveBarFill.anchorMax = new Vector2(0f, 1f);
+            _reviveBarFill.offsetMin = Vector2.zero;
+            _reviveBarFill.offsetMax = Vector2.zero;
+            var revFillImg = revFillGo.AddComponent<Image>();
+            revFillImg.color = L4DCyan;
+            revFillImg.raycastTarget = false;
+
+            var revTxtGo = CreateUIObject("ReviveText", _reviveBarRoot.transform);
+            var revTxtRt = revTxtGo.GetComponent<RectTransform>();
+            revTxtRt.anchorMin = Vector2.zero;
+            revTxtRt.anchorMax = Vector2.one;
+            revTxtRt.offsetMin = Vector2.zero;
+            revTxtRt.offsetMax = Vector2.zero;
+            _reviveValueText = revTxtGo.AddComponent<Text>();
+            _reviveValueText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            _reviveValueText.fontSize = 11;
+            _reviveValueText.fontStyle = FontStyle.Bold;
+            _reviveValueText.alignment = TextAnchor.MiddleCenter;
+            _reviveValueText.color = Color.white;
+            _reviveValueText.raycastTarget = false;
+
+            _reviveBarRoot.SetActive(false);
+            _lifeStateBannerRoot.SetActive(false);
+        }
+
         private void RefreshVitalsUI()
         {
+            if (_crosshairRoot != null)
+            {
+                _crosshairRoot.SetActive(_cachedLifeState == Scorched.Player.PlayerLifeState.Alive);
+            }
+
             if (_healthBarFill != null && _healthBarImage != null)
             {
-                float hpPct = Mathf.Clamp01(_cachedHealth / _cachedMaxHealth);
-                _healthBarFill.anchorMax = new Vector2(hpPct, 1f);
-
-                if (hpPct > 0.5f)
+                if (_cachedLifeState == Scorched.Player.PlayerLifeState.Downed)
                 {
-                    _healthBarImage.color = L4DGreen;
+                    float downPct = Mathf.Clamp01(_cachedDownedHealth / Mathf.Max(1f, _cachedMaxDownedHealth));
+                    _healthBarFill.anchorMax = new Vector2(downPct, 1f);
+                    _healthBarImage.color = L4DRed;
+                    if (_healthValueText != null)
+                    {
+                        _healthValueText.text = $"DOWNED: {Mathf.CeilToInt(downPct * 100f)}%";
+                    }
                 }
-                else if (hpPct > 0.25f)
+                else if (_cachedLifeState == Scorched.Player.PlayerLifeState.Dead)
                 {
-                    _healthBarImage.color = L4DYellow;
+                    _healthBarFill.anchorMax = new Vector2(0f, 1f);
+                    _healthBarImage.color = L4DRed;
+                    if (_healthValueText != null)
+                    {
+                        _healthValueText.text = $"0 / {Mathf.CeilToInt(_cachedMaxHealth)} HP [KIA]";
+                    }
                 }
                 else
                 {
-                    _healthBarImage.color = L4DRed;
-                }
+                    float hpPct = Mathf.Clamp01(_cachedHealth / _cachedMaxHealth);
+                    _healthBarFill.anchorMax = new Vector2(hpPct, 1f);
 
-                if (_healthValueText != null)
+                    if (hpPct > 0.5f)
+                    {
+                        _healthBarImage.color = L4DGreen;
+                    }
+                    else if (hpPct > 0.25f)
+                    {
+                        _healthBarImage.color = L4DYellow;
+                    }
+                    else
+                    {
+                        _healthBarImage.color = L4DRed;
+                    }
+
+                    if (_healthValueText != null)
+                    {
+                        _healthValueText.text = $"{Mathf.CeilToInt(_cachedHealth)} / {Mathf.CeilToInt(_cachedMaxHealth)} HP";
+                    }
+                }
+            }
+
+            if (_lifeStateBannerRoot != null)
+            {
+                if (_cachedLifeState == Scorched.Player.PlayerLifeState.Alive)
                 {
-                    _healthValueText.text = $"{Mathf.CeilToInt(_cachedHealth)} / {Mathf.CeilToInt(_cachedMaxHealth)} HP";
+                    _lifeStateBannerRoot.SetActive(false);
+                }
+                else if (_cachedLifeState == Scorched.Player.PlayerLifeState.Downed)
+                {
+                    _lifeStateBannerRoot.SetActive(true);
+                    float downPct = Mathf.Clamp01(_cachedDownedHealth / Mathf.Max(1f, _cachedMaxDownedHealth));
+                    if (_bleedoutBarFill != null) _bleedoutBarFill.anchorMax = new Vector2(downPct, 1f);
+                    if (_bleedoutBarImage != null) _bleedoutBarImage.color = _cachedReviveProgress > 0.01f ? L4DCyan : L4DRed;
+
+                    if (_lifeStateTitleText != null)
+                    {
+                        _lifeStateTitleText.color = _cachedReviveProgress > 0.01f ? L4DCyan : L4DYellow;
+                        _lifeStateTitleText.text = _cachedReviveProgress > 0.01f
+                            ? "[ REVIVING IN PROGRESS ]"
+                            : "[ DOWNED — BLEEDING OUT ]";
+                    }
+
+                    if (_lifeStatePromptText != null)
+                    {
+                        _lifeStatePromptText.text = _cachedReviveProgress > 0.01f
+                            ? $"Keep holding F / E... {Mathf.CeilToInt(_cachedReviveProgress * 100f)}%"
+                            : "[HOLD F or E] Self-Revive (5.0s)   •   [WASD] Crawl";
+                    }
+
+                    if (_reviveBarRoot != null)
+                    {
+                        _reviveBarRoot.SetActive(_cachedReviveProgress > 0.01f);
+                        if (_reviveBarFill != null) _reviveBarFill.anchorMax = new Vector2(_cachedReviveProgress, 1f);
+                        if (_reviveValueText != null) _reviveValueText.text = $"REVIVE: {Mathf.CeilToInt(_cachedReviveProgress * 100f)}%";
+                    }
+                }
+                else // Dead
+                {
+                    _lifeStateBannerRoot.SetActive(true);
+                    if (_bleedoutBarFill != null) _bleedoutBarFill.anchorMax = new Vector2(0f, 1f);
+                    if (_lifeStateTitleText != null)
+                    {
+                        _lifeStateTitleText.color = L4DRed;
+                        _lifeStateTitleText.text = "[ KILLED IN ACTION ]";
+                    }
+                    if (_lifeStatePromptText != null)
+                    {
+                        _lifeStatePromptText.text = "Respawning shortly — hold position...";
+                    }
+                    if (_reviveBarRoot != null) _reviveBarRoot.SetActive(false);
                 }
             }
 

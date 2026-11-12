@@ -46,6 +46,8 @@ namespace Scorched.Weapons
             public bool IsServerAuthoritative;
             public LayerMask HitMask;
             public TrailRenderer VisualTrail;
+            public Transform IgnoredRoot;
+            public int ShotId;
         }
         #endregion
 
@@ -114,7 +116,9 @@ namespace Scorched.Weapons
             bool isServerAuthoritative,
             LayerMask hitMask,
             bool attachVisualTrail = false,
-            float maxLifetime = 5.0f)
+            float maxLifetime = 5.0f,
+            Transform ignoredRoot = null,
+            int shotId = -1)
         {
             TrailRenderer trail = null;
             if (attachVisualTrail && BulletVisualPoolManager.Instance != null)
@@ -133,7 +137,9 @@ namespace Scorched.Weapons
                 ShooterClientId = shooterClientId,
                 IsServerAuthoritative = isServerAuthoritative,
                 HitMask = hitMask,
-                VisualTrail = trail
+                VisualTrail = trail,
+                IgnoredRoot = ignoredRoot,
+                ShotId = shotId
             });
         }
         #endregion
@@ -163,13 +169,20 @@ namespace Scorched.Weapons
                 Vector3 currentPos = p.Position;
                 Vector3 nextPos = currentPos + (p.Velocity * dt);
 
-                // 4. Continuous collision linecast
-                if (Physics.Linecast(currentPos, nextPos, out RaycastHit hit, p.HitMask, QueryTriggerInteraction.Ignore))
+                // 4. Continuous collision linecast via anatomical combat resolver
+                if (CombatHitResolver.TryLinecastFirstCombatHit(
+                    currentPos,
+                    nextPos,
+                    p.HitMask,
+                    p.IgnoredRoot,
+                    out RaycastHit hit,
+                    out IDamageable damageable,
+                    out BodyPartHitbox hitbox))
                 {
                     // Server-authoritative damage resolution
                     if (p.IsServerAuthoritative)
                     {
-                        ResolveDamage(hit, p);
+                        ResolveDamage(hit, damageable, hitbox, p);
                     }
 
                     // Client-side visual impact
@@ -196,13 +209,16 @@ namespace Scorched.Weapons
             }
         }
 
-        private static void ResolveDamage(RaycastHit hit, ActiveProjectile p)
+        private static void ResolveDamage(RaycastHit hit, IDamageable damageable, BodyPartHitbox hitbox, ActiveProjectile p)
         {
-            var damageable = hit.collider.GetComponentInParent<IDamageable>();
-            if (damageable != null)
-            {
-                damageable.ApplyCombatHit(p.Damage, p.HydrationDrain, p.ShooterClientId, hit.point);
-            }
+            CombatHitResolver.ApplyResolvedHit(
+                damageable,
+                hitbox,
+                p.Damage,
+                p.HydrationDrain,
+                p.ShooterClientId,
+                hit.point,
+                p.ShotId);
 
             if (hit.rigidbody != null && !hit.rigidbody.isKinematic)
             {

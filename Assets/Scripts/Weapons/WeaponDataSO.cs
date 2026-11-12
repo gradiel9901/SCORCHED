@@ -39,7 +39,7 @@ namespace Scorched.Weapons
         [Header("Lethality & Survival Penalties")]
         [Tooltip("Base health damage subtracted per projectile hit.")]
         [Range(1.0f, 300.0f)]
-        [SerializeField] private float _baseDamage = 34.0f;
+        [SerializeField] private float _baseDamage = 22.0f;
 
         [Tooltip("Tactical hydration percentage/amount drained from the target on hit in Scorched.")]
         [Range(0.0f, 100.0f)]

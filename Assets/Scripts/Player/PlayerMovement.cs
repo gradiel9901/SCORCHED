@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using Unity.Netcode;
 using Unity.Netcode.Components;
 using UnityEngine;
@@ -66,6 +67,7 @@ namespace Scorched.Player
     [RequireComponent(typeof(NetworkObject))]
     [RequireComponent(typeof(NetworkTransform))]
     [RequireComponent(typeof(Animator))]
+    [RequireComponent(typeof(PlayerHealthController))]
     [RequireComponent(typeof(PlayerWeaponHandler))]
     [RequireComponent(typeof(NetworkWeaponController))]
     public class PlayerMovement : NetworkBehaviour, IDamageable
@@ -78,6 +80,9 @@ namespace Scorched.Player
         private static readonly int AnimStateSprintJump = Animator.StringToHash("Sprint Jump");
         private static readonly int AnimStateCrouchIdle = Animator.StringToHash("Crouch Idle");
         private static readonly int AnimStateCrouchedRun = Animator.StringToHash("Crouched Run");
+        private static readonly int AnimStateDownIdle = Animator.StringToHash("Down Idle");
+        private static readonly int AnimStateDownWalking = Animator.StringToHash("Down Walking");
+        private static readonly int AnimStateDeath = Animator.StringToHash("Death");
         private static readonly int AnimStateFiringRifle = Animator.StringToHash("Firing Rifle");
         private static readonly int AnimStateEmpty = Animator.StringToHash("Empty");
         private static readonly int AnimParamSpeedMultiplier = Animator.StringToHash("MoveSpeedMultiplier");
@@ -141,26 +146,47 @@ namespace Scorched.Player
         [SerializeField] private float _maxPitchAngle = 85.0f;
 
         [Header("True First-Person Dynamic Eye-Level Camera")]
-        [Tooltip("Field of view for first-person perspective (75-80 degrees for tactical FPS weapon framing).")]
-        [SerializeField] private float _fieldOfView = 75.0f;
+        [Tooltip("Field of view for first-person perspective (80 degrees for standard Modern Warfare weapon framing).")]
+        [SerializeField] private float _fieldOfView = 80.0f;
 
         [Tooltip("The character's head bone (head.x). Auto-detected if unassigned.")]
         [SerializeField] private Transform _headBone;
 
-        [Tooltip("Forward offset from the head bone pivot to place the camera right at the eyes/goggles (outside the skull).")]
-        [SerializeField] private float _eyeOffsetForward = 0.15f;
+        [Tooltip("The character's neck bone (neck.x). Auto-detected if unassigned.")]
+        [SerializeField] private Transform _neckBone;
 
-        [Tooltip("Upward offset from the head bone pivot to the eye line.")]
-        [SerializeField] private float _eyeOffsetUp = 0.04f;
+        [Tooltip("Forward offset from the anchor bone pivot to place the camera right at eye level.")]
+        [SerializeField] private float _eyeOffsetForward = 0.04f;
 
-        [Tooltip("Horizontal / side offset (0 = centered).")]
-        [SerializeField] private float _eyeOffsetRight = 0.0f;
+        [Tooltip("Upward offset from the anchor bone pivot to the eye line.")]
+        [SerializeField] private float _eyeOffsetUp = 0.02f;
+
+        [Tooltip("Horizontal / side offset (0 = centered, >0 = right).")]
+        [SerializeField] private float _eyeOffsetRight = 0.01f;
 
         [Tooltip("Camera tracking smoothness (0 = instant 1:1 lock, prevents camera lag from trailing inside head during locomotion).")]
         [SerializeField] private float _cameraFollowSpeed = 0.0f;
 
-        [Tooltip("Camera near clip plane to prevent rifle, sight, and facial clipping (default 0.02 = 2cm).")]
-        [SerializeField] private float _nearClipPlane = 0.02f;
+        [Tooltip("Camera near clip plane to prevent rifle, sight, and facial clipping (default 0.015 = 1.5cm).")]
+        [SerializeField] private float _nearClipPlane = 0.015f;
+
+        private Vector3 _proceduralCameraOffset = Vector3.zero;
+        private Vector3 _proceduralCameraRotationOffset = Vector3.zero;
+
+        public Vector3 ProceduralCameraOffset
+        {
+            get => _proceduralCameraOffset;
+            set => _proceduralCameraOffset = value;
+        }
+
+        public Vector3 ProceduralCameraRotationOffset
+        {
+            get => _proceduralCameraRotationOffset;
+            set => _proceduralCameraRotationOffset = value;
+        }
+
+        public Transform HeadBone => _headBone;
+        public Transform NeckBone => _neckBone;
 
         [Header("Combat / Firing")]
         [Tooltip("Duration of the rifle firing animation before returning to locomotion (seconds).")]
@@ -235,22 +261,16 @@ namespace Scorched.Player
             0f,
             NetworkVariableReadPermission.Everyone,
             NetworkVariableWritePermission.Owner);
-
-        /// <summary>
-        /// Server-authoritative player health replicated to all clients.
-        /// </summary>
-        private readonly NetworkVariable<float> _networkHealth = new NetworkVariable<float>(
-            100f,
-            NetworkVariableReadPermission.Everyone,
-            NetworkVariableWritePermission.Server);
         #endregion
 
         #region Private Runtime State
         private CharacterController _characterController;
         private NetworkTransform _networkTransform;
         private Animator _animator;
+        private PlayerHealthController _healthController;
         private PlayerWeaponHandler _weaponHandler;
         private NetworkWeaponController _networkWeaponController;
+        private bool _isDuplicateSceneInstance = false;
 
         private Vector3 _velocity;
         private Vector3 _airborneVelocity;
@@ -273,9 +293,22 @@ namespace Scorched.Player
         private float _smoothedAimPitch;
         private bool _hasUpperBodyLayer;
         private bool _hasIsFiringParam;
+        private FPSPerspectiveController _perspectiveController;
         #endregion
 
         #region Public Properties & State Accessors
+        /// <summary>
+        /// Transform of the upper chest bone (spine_03.x) for torso-relative IK and aim calculations.
+        /// </summary>
+        public Transform UpperChestBone
+        {
+            get
+            {
+                EnsureSpineBones();
+                return _upperChestBone != null ? _upperChestBone : _chestBone;
+            }
+        }
+
         /// <summary>
         /// Current active pose state for weapon offset blending and attachments.
         /// </summary>
@@ -311,6 +344,30 @@ namespace Scorched.Player
         public float MouseSensitivityX => _mouseSensitivityX;
         public float MouseSensitivityY => _mouseSensitivityY;
         public bool IsCursorLocked => Cursor.lockState == CursorLockMode.Locked;
+        public bool IsSprinting => _currentLocomotion == LocomotionState.Running;
+        public bool IsGrounded => _isGrounded;
+        public bool IsCrouching => _isCrouching;
+        public bool IsAirborne => _isAirborne;
+        public bool IsSprintJumpActive => _isSprintJumpActive;
+        public LocomotionState CurrentLocomotion => _currentLocomotion;
+        public float CurrentHealth => _healthController != null ? _healthController.CurrentHealthValue : _currentHealth;
+        public bool IsDead => _healthController != null ? _healthController.IsDead : (_currentHealth <= 0f);
+        public PlayerHealthController HealthController => _healthController;
+        public bool IsAttacking => _attackTimer > 0f;
+
+        private FPSPerspectiveController EnsurePerspectiveController()
+        {
+            if (_perspectiveController == null)
+            {
+                _perspectiveController = GetComponent<FPSPerspectiveController>();
+            }
+            return _perspectiveController;
+        }
+        public float EyeOffsetForward { get => _eyeOffsetForward; set => _eyeOffsetForward = value; }
+        public float EyeOffsetUp { get => _eyeOffsetUp; set => _eyeOffsetUp = value; }
+        public float EyeOffsetRight { get => _eyeOffsetRight; set => _eyeOffsetRight = value; }
+        public float NearClipPlane { get => _nearClipPlane; set => _nearClipPlane = value; }
+        public float FieldOfViewProperty { get => _fieldOfView; set => _fieldOfView = value; }
 
         /// <summary>
         /// Dynamically updates runtime look sensitivity and camera field of view from settings.
@@ -360,6 +417,16 @@ namespace Scorched.Player
         #region Unity Lifecycle & Auto-Configuration
         private void Awake()
         {
+            // Only the pre-placed scene Player runs Awake before NetworkManager starts listening;
+            // newly spawned ScorchedPlayer prefab clones instantiate while IsListening == true.
+            if (!IsSpawned && NetworkManager.Singleton != null &&
+                NetworkManager.Singleton.NetworkConfig?.PlayerPrefab != null &&
+                !NetworkManager.Singleton.IsListening)
+            {
+                NetworkManager.Singleton.OnServerStarted += OnNetworkStartedCleanupDuplicate;
+                NetworkManager.Singleton.OnClientStarted += OnNetworkStartedCleanupDuplicate;
+            }
+
             _characterController = GetComponent<CharacterController>();
             if (_characterController != null)
             {
@@ -368,6 +435,7 @@ namespace Scorched.Player
 
             _networkTransform = GetComponent<NetworkTransform>();
             _animator = GetComponent<Animator>() ?? GetComponentInChildren<Animator>();
+            _healthController = GetComponent<PlayerHealthController>();
             _weaponHandler = GetComponent<PlayerWeaponHandler>();
             _networkWeaponController = GetComponent<NetworkWeaponController>();
             EnsureHeadBone();
@@ -400,6 +468,19 @@ namespace Scorched.Player
 
         private void Start()
         {
+            if (_isDuplicateSceneInstance)
+            {
+                return;
+            }
+
+            // Do not activate an unspawned scene player if NetworkManager is already listening with PlayerPrefab
+            if (!IsSpawned && NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening && NetworkManager.Singleton.NetworkConfig?.PlayerPrefab != null)
+            {
+                _isDuplicateSceneInstance = true;
+                Destroy(gameObject);
+                return;
+            }
+
             // Auto-setup camera and controls whether running in an offline test scene or spawned via NGO
             SetupCamera();
             if (!Scorched.UI.MainMenuUIManager.IsMenuOpen)
@@ -416,7 +497,10 @@ namespace Scorched.Player
                 _characterController.enabled = true;
             }
 
-            PlayAnimationDirect(AnimStateIdle, 0f);
+            if (_healthController == null || _healthController.IsAlive)
+            {
+                PlayAnimationDirect(AnimStateIdle, 0f);
+            }
 
             // Initialize Left 4 Dead 2 style tactical HUD for local client
             if (!IsSpawned || IsOwner)
@@ -473,6 +557,25 @@ namespace Scorched.Player
         {
             base.OnNetworkSpawn();
 
+            if (_healthController == null)
+            {
+                _healthController = GetComponent<PlayerHealthController>();
+            }
+
+            // Eradicate pre-placed scene Player duplicate when Netcode uses PlayerPrefab spawning!
+            if (NetworkManager.Singleton != null &&
+                NetworkManager.Singleton.NetworkConfig?.PlayerPrefab != null &&
+                NetworkObject != null &&
+                !NetworkObject.IsPlayerObject)
+            {
+                DisableDuplicateScenePlayerImmediately();
+                if (IsServer)
+                {
+                    StartCoroutine(DespawnDuplicateScenePlayerCoroutine());
+                }
+                return;
+            }
+
             // Locate existing camera or auto-generate one for the owner
             SetupCamera();
 
@@ -522,7 +625,10 @@ namespace Scorched.Player
                 }
 
                 // Play initial local idle
-                PlayAnimationDirect(AnimStateIdle, 0f);
+                if (_healthController == null || _healthController.IsAlive)
+                {
+                    PlayAnimationDirect(AnimStateIdle, 0f);
+                }
 
                 _networkAimYaw.Value = transform.eulerAngles.y;
                 _networkAimPitch.Value = _cameraPitch;
@@ -534,7 +640,7 @@ namespace Scorched.Player
                     hudGo.AddComponent<Scorched.UI.L4DHUDManager>();
                 }
 
-                Scorched.UI.L4DHUDManager.Instance?.UpdateHealth(_currentHealth, _maxHealth);
+                Scorched.UI.L4DHUDManager.Instance?.UpdateHealth(CurrentHealth, _maxHealth);
                 Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
             }
             else
@@ -563,22 +669,20 @@ namespace Scorched.Player
                 _networkIsMovingBackward.OnValueChanged += HandleRemoteBackwardChanged;
 
                 // Sync initial remote state
-                ApplyLocomotionAnimation((LocomotionState)_networkLocomotionState.Value, 0.1f);
+                if (_healthController == null || _healthController.IsAlive)
+                {
+                    ApplyLocomotionAnimation((LocomotionState)_networkLocomotionState.Value, 0.1f);
+                }
                 if (_animator != null)
                 {
                     _animator.SetFloat(AnimParamSpeedMultiplier, _networkIsMovingBackward.Value ? -1.0f : 1.0f);
                 }
             }
-
-            // Sync server-authoritative health to local client HUD
-            _networkHealth.OnValueChanged += HandleNetworkHealthChanged;
         }
 
         public override void OnNetworkDespawn()
         {
             base.OnNetworkDespawn();
-
-            _networkHealth.OnValueChanged -= HandleNetworkHealthChanged;
 
             if (!IsOwner)
             {
@@ -587,22 +691,106 @@ namespace Scorched.Player
             }
         }
 
-        private void HandleNetworkHealthChanged(float oldVal, float newVal)
+        public override void OnDestroy()
         {
-            _currentHealth = newVal;
-            if (IsOwner)
+            base.OnDestroy();
+
+            if (NetworkManager.Singleton != null)
             {
-                Scorched.UI.L4DHUDManager.Instance?.UpdateHealth(_currentHealth, _maxHealth);
+                NetworkManager.Singleton.OnServerStarted -= OnNetworkStartedCleanupDuplicate;
+                NetworkManager.Singleton.OnClientStarted -= OnNetworkStartedCleanupDuplicate;
+            }
+
+            if (_headBone != null) _headBone.localScale = Vector3.one;
+            if (_neckBone != null) _neckBone.localScale = Vector3.one;
+        }
+
+        private void OnNetworkStartedCleanupDuplicate()
+        {
+            if (this == null || gameObject == null)
+            {
+                return;
+            }
+
+            bool isSceneDuplicate = !IsSpawned || (NetworkObject != null && !NetworkObject.IsPlayerObject);
+            if (!isSceneDuplicate)
+            {
+                return;
+            }
+
+            DisableDuplicateScenePlayerImmediately();
+            if (!IsSpawned)
+            {
+                Debug.Log("[PlayerMovement] Disabling duplicate unspawned scene Player upon NetworkManager start.");
+                gameObject.SetActive(false);
+            }
+            else if (IsServer)
+            {
+                StartCoroutine(DespawnDuplicateScenePlayerCoroutine());
+            }
+        }
+
+        private void DisableDuplicateScenePlayerImmediately()
+        {
+            _isDuplicateSceneInstance = true;
+            Debug.Log($"[PlayerMovement] Removing duplicate pre-placed scene Player '{gameObject.name}' (IsSpawned={IsSpawned}, IsPlayerObject={NetworkObject?.IsPlayerObject}).");
+
+            if (_characterController != null)
+            {
+                _characterController.enabled = false;
+            }
+            if (_healthController != null)
+            {
+                _healthController.enabled = false;
+            }
+            if (_networkWeaponController != null)
+            {
+                _networkWeaponController.enabled = false;
+            }
+            if (_perspectiveController != null)
+            {
+                _perspectiveController.enabled = false;
+            }
+
+            foreach (var cam in GetComponentsInChildren<Camera>(true))
+            {
+                cam.enabled = false;
+            }
+            foreach (var listener in GetComponentsInChildren<AudioListener>(true))
+            {
+                listener.enabled = false;
+            }
+            foreach (var col in GetComponentsInChildren<Collider>(true))
+            {
+                col.enabled = false;
+            }
+            foreach (var rend in GetComponentsInChildren<Renderer>(true))
+            {
+                rend.enabled = false;
+            }
+        }
+
+        private IEnumerator DespawnDuplicateScenePlayerCoroutine()
+        {
+            yield return null;
+            if (this != null && gameObject != null)
+            {
+                if (NetworkObject != null && NetworkObject.IsSpawned)
+                {
+                    NetworkObject.Despawn(false);
+                }
+                gameObject.SetActive(false);
             }
         }
 
         private void EnsureHeadBone()
         {
-            if (_headBone == null)
+            if (_headBone == null || _neckBone == null)
             {
                 if (_animator != null && _animator.isHuman)
                 {
-                    _headBone = _animator.GetBoneTransform(HumanBodyBones.Head);
+                    if (_headBone == null) _headBone = _animator.GetBoneTransform(HumanBodyBones.Head);
+                    if (_neckBone == null) _neckBone = _animator.GetBoneTransform(HumanBodyBones.Neck);
                 }
 
                 if (_headBone == null)
@@ -611,6 +799,14 @@ namespace Scorched.Player
                              ?? FindDeepChild(transform, "head")
                              ?? FindDeepChild(transform, "mixamorig:Head")
                              ?? FindDeepChild(transform, "Head");
+                }
+
+                if (_neckBone == null)
+                {
+                    _neckBone = FindDeepChild(transform, "neck.x")
+                             ?? FindDeepChild(transform, "neck")
+                             ?? FindDeepChild(transform, "mixamorig:Neck")
+                             ?? FindDeepChild(transform, "Neck");
                 }
             }
         }
@@ -720,13 +916,26 @@ namespace Scorched.Player
 
         private void Update()
         {
+            if (_isDuplicateSceneInstance)
+            {
+                return;
+            }
+
             // Remote proxies smoothly interpolate rotation to match the replicated aim yaw in real-time
             if (IsSpawned && !IsOwner)
             {
-                float targetYaw = _networkAimYaw.Value;
-                float currentYaw = transform.eulerAngles.y;
-                float smoothYaw = Mathf.LerpAngle(currentYaw, targetYaw, Time.deltaTime * 30f);
-                transform.rotation = Quaternion.Euler(0f, smoothYaw, 0f);
+                if (_healthController == null || !_healthController.IsDead)
+                {
+                    float targetYaw = _networkAimYaw.Value;
+                    float currentYaw = transform.eulerAngles.y;
+                    float smoothYaw = Mathf.LerpAngle(currentYaw, targetYaw, Time.deltaTime * 30f);
+                    transform.rotation = Quaternion.Euler(0f, smoothYaw, 0f);
+                }
+
+                if (_healthController != null && !_healthController.IsAlive)
+                {
+                    UpdateAnimationState();
+                }
                 return;
             }
 
@@ -751,25 +960,40 @@ namespace Scorched.Player
 
         private void LateUpdate()
         {
-            // Apply procedural torso aim pitch for BOTH local owner and remote proxies
+            if (_isDuplicateSceneInstance)
+            {
+                return;
+            }
+
+            // Apply procedural torso aim pitch for BOTH local owner and remote proxies (Alive state only)
             ApplyProceduralSpineAim();
 
-            // On remote proxies, ensure body yaw matches aim yaw exactly after animations evaluate
+            // On remote proxies, ensure body yaw matches aim yaw cleanly after animations evaluate
             if (IsSpawned && !IsOwner)
             {
-                transform.rotation = Quaternion.Euler(0f, _networkAimYaw.Value, 0f);
+                if (_healthController == null || !_healthController.IsDead)
+                {
+                    transform.rotation = Quaternion.Euler(0f, _networkAimYaw.Value, 0f);
+                }
                 return;
             }
 
             UpdateCameraPositionAndRotation();
 
             // Ensure local owner's yaw is kept in sync
-            if (IsSpawned && IsOwner)
+            if (IsSpawned && IsOwner && (_healthController == null || !_healthController.IsDead))
             {
                 if (Mathf.Abs(_networkAimYaw.Value - transform.eulerAngles.y) > 0.1f)
                 {
                     _networkAimYaw.Value = transform.eulerAngles.y;
                 }
+            }
+
+            // Solve Left Hand IK AFTER spine pitch, weapon socket, and camera have evaluated
+            var perspectiveCtrl = GetComponent<FPSPerspectiveController>();
+            if (perspectiveCtrl != null)
+            {
+                perspectiveCtrl.PostLateUpdateIK();
             }
         }
 
@@ -780,6 +1004,11 @@ namespace Scorched.Player
         /// </summary>
         private void ApplyProceduralSpineAim()
         {
+            if (_healthController != null && !_healthController.IsAlive)
+            {
+                return;
+            }
+
             EnsureSpineBones();
             if (_spineBone == null && _chestBone == null && _upperChestBone == null)
             {
@@ -852,53 +1081,108 @@ namespace Scorched.Player
                 }
             }
 
+            // Head bone scaling:
+            // For the local owner while Alive, scale ONLY the head bone to zero so the skull/face never clips,
+            // while neck bone scale is strictly kept at (1,1,1) so collar/jacket vertices NEVER stretch or explode!
+            // When Downed or Dead, restore head scale so the full body renders cleanly in third-person crawl/death camera.
+            bool isLocalOwner = !IsSpawned || IsOwner;
+            bool isAlive = _healthController == null || _healthController.IsAlive;
+            if (isLocalOwner && isAlive)
+            {
+                if (_headBone != null && _headBone.localScale != Vector3.zero)
+                {
+                    _headBone.localScale = Vector3.zero;
+                }
+                if (_neckBone != null && _neckBone.localScale != Vector3.one)
+                {
+                    _neckBone.localScale = Vector3.one;
+                }
+            }
+            else
+            {
+                if (_headBone != null && _headBone.localScale != Vector3.one)
+                {
+                    _headBone.localScale = Vector3.one;
+                }
+                if (_neckBone != null && _neckBone.localScale != Vector3.one)
+                {
+                    _neckBone.localScale = Vector3.one;
+                }
+            }
+
             // 1. Calculate 3D view orientation matching vertical aim pitch
             Quaternion viewRot = transform.rotation * Quaternion.Euler(_cameraPitch, 0f, 0f);
             Vector3 viewForward = viewRot * Vector3.forward;
             Vector3 viewUp = viewRot * Vector3.up;
             Vector3 viewRight = viewRot * Vector3.right;
 
-            // 2. Calculate the ideal eye position from the animated head bone along the view orientation
+            // 2. Calculate the ideal eye position (or 3rd-person orbit camera while Downed / Dead)
             Vector3 targetEyePos;
-            if (_headBone != null)
+            if (!isAlive)
             {
-                // Dynamic forward clearance based on animation state to compensate for sprint lean and recoil
-                float dynamicClearance = 0f;
-                if (_attackTimer > 0f)
-                {
-                    dynamicClearance = 0.02f; // Rifle recoil clearance
-                }
-                else if (_currentLocomotion == LocomotionState.Running)
-                {
-                    dynamicClearance = 0.04f; // Sprint lean clearance
-                }
-                else if (_currentLocomotion == LocomotionState.Jog)
-                {
-                    dynamicClearance = 0.02f; // Jog lean clearance
-                }
+                bool isDead = _healthController != null && _healthController.IsDead;
+                float pivotHeight = isDead ? 0.55f : 0.70f;
+                float camBackDist = isDead ? 2.40f : 1.75f;
+                float camUpLift = isDead ? 0.75f : 0.45f;
+                Vector3 pivot = transform.position + Vector3.up * pivotHeight;
+                Vector3 desiredOffset = (-viewForward * camBackDist) + (Vector3.up * camUpLift);
+                float desiredDist = desiredOffset.magnitude;
+                Vector3 rayDir = desiredDist > 0.001f ? desiredOffset / desiredDist : -transform.forward;
 
-                // High-angle aiming adjustments:
-                // When aiming UP into the sky (_cameraPitch < 0), the neck tilts back and the weapon rises.
-                // Shift camera along viewUp and maintain eye relief distance so the camera is never inside the gun receiver.
-                float lookUpFactor = Mathf.Clamp01(-_cameraPitch / 80f);
-                float lookDownFactor = Mathf.Clamp01(_cameraPitch / 80f);
-
-                float forwardDist = _eyeOffsetForward + dynamicClearance + (lookDownFactor * 0.04f) - (lookUpFactor * 0.045f);
-                float upDist = _eyeOffsetUp + (lookUpFactor * 0.065f);
-
-                targetEyePos = _headBone.position
-                             + viewForward * forwardDist
-                             + viewUp * upDist
-                             + viewRight * _eyeOffsetRight;
+                if (Physics.Raycast(pivot, rayDir, out RaycastHit camHit, desiredDist, ~0, QueryTriggerInteraction.Ignore) &&
+                    camHit.collider != null && camHit.collider.transform.root != transform)
+                {
+                    targetEyePos = pivot + rayDir * Mathf.Max(0.35f, camHit.distance - 0.12f);
+                }
+                else
+                {
+                    targetEyePos = pivot + desiredOffset;
+                }
             }
             else
             {
-                // Fallback if no head bone: use crouch/standing height
-                float currentEyeHeight = _isCrouching ? _crouchHeight * 0.85f : _standingHeight * 0.9f;
-                targetEyePos = transform.position + Vector3.up * currentEyeHeight + viewForward * _eyeOffsetForward;
+                Transform anchorBone = _neckBone != null ? _neckBone : _headBone;
+                if (anchorBone != null)
+                {
+                    // Dynamic forward clearance based on animation state to compensate for sprint lean and recoil
+                    float dynamicClearance = 0f;
+                    if (_attackTimer > 0f)
+                    {
+                        dynamicClearance = 0.02f; // Rifle recoil clearance
+                    }
+                    else if (_currentLocomotion == LocomotionState.Running)
+                    {
+                        dynamicClearance = 0.04f; // Sprint lean clearance
+                    }
+                    else if (_currentLocomotion == LocomotionState.Jog)
+                    {
+                        dynamicClearance = 0.02f; // Jog lean clearance
+                    }
+
+                    // High-angle aiming adjustments:
+                    // When aiming UP into the sky (_cameraPitch < 0), the neck tilts back and the weapon rises.
+                    // Shift camera along viewUp and maintain eye relief distance so the camera is never inside the gun receiver.
+                    float lookUpFactor = Mathf.Clamp01(-_cameraPitch / 80f);
+                    float lookDownFactor = Mathf.Clamp01(_cameraPitch / 80f);
+
+                    float forwardDist = _eyeOffsetForward + dynamicClearance + (lookDownFactor * 0.04f) - (lookUpFactor * 0.045f);
+                    float upDist = _eyeOffsetUp + (lookUpFactor * 0.065f);
+
+                    targetEyePos = anchorBone.position
+                                 + viewForward * forwardDist
+                                 + viewUp * upDist
+                                 + viewRight * _eyeOffsetRight
+                                 + _proceduralCameraOffset;
+                }
+                else
+                {
+                    // Fallback if no anchor bone: use crouch/standing height
+                    float currentEyeHeight = _isCrouching ? _crouchHeight * 0.85f : _standingHeight * 0.9f;
+                    targetEyePos = transform.position + Vector3.up * currentEyeHeight + viewForward * _eyeOffsetForward + _proceduralCameraOffset;
+                }
             }
 
-            // 3. Position tracking: 1:1 Instant lock (0 lag) eliminates camera trailing into the skull
+            // 3. Position tracking: 1:1 Instant lock (0 lag) eliminates camera trailing inside the skull
             if (_cameraFollowSpeed > 0f && Time.deltaTime > 0f && Application.isPlaying)
             {
                 _cameraTransform.position = Vector3.Lerp(_cameraTransform.position, targetEyePos, Time.deltaTime * _cameraFollowSpeed);
@@ -908,14 +1192,8 @@ namespace Scorched.Player
                 _cameraTransform.position = targetEyePos;
             }
 
-            // 4. Rotation: Pitch tilts vertically, Yaw matches body facing
-            _cameraTransform.localRotation = Quaternion.Euler(_cameraPitch, 0f, 0f);
-
-            // Ensure head bone scale is always intact (full original head)
-            if (_headBone != null && _headBone.localScale != Vector3.one)
-            {
-                _headBone.localScale = Vector3.one;
-            }
+            // 4. Rotation: Pitch tilts vertically, Yaw matches body facing + procedural sway/kick
+            _cameraTransform.localRotation = Quaternion.Euler(_cameraPitch, 0f, 0f) * Quaternion.Euler(_proceduralCameraRotationOffset);
         }
         #endregion
 
@@ -961,6 +1239,11 @@ namespace Scorched.Player
 
         private void HandleLookInput()
         {
+            if (_healthController != null && _healthController.IsDead)
+            {
+                return;
+            }
+
             var mouse = Mouse.current ?? InputSystem.GetDevice<Mouse>();
             if (mouse == null)
             {
@@ -1021,12 +1304,28 @@ namespace Scorched.Player
                 }
             }
 
+            PlayerLifeState lifeState = _healthController != null ? _healthController.LifeState : PlayerLifeState.Alive;
+            if (lifeState == PlayerLifeState.Dead)
+            {
+                _isCrouching = true;
+                AdjustColliderForCrouch(true);
+                _velocity.y += _gravity * Time.deltaTime;
+                if (_characterController.enabled)
+                {
+                    _characterController.Move(_velocity * Time.deltaTime);
+                }
+                _healthController?.SetDownedMovingState(false);
+                return;
+            }
+
+            bool isDowned = lifeState == PlayerLifeState.Downed;
+
             // Direct hardcoded key polling (WASD, Arrows, Shift, Ctrl, Space)
             var keyboard = Keyboard.current ?? InputSystem.GetDevice<Keyboard>();
             float horizontal = 0f;
             float vertical = 0f;
             bool isSprintHeld = false;
-            bool isCrouchHeld = false;
+            bool isCrouchHeld = isDowned;
             bool isJumpPressed = false;
 
             if (keyboard != null)
@@ -1055,14 +1354,17 @@ namespace Scorched.Player
                     horizontal -= 1f;
                 }
 
-                // Shift -> Sprint
-                isSprintHeld = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed;
+                if (!isDowned)
+                {
+                    // Shift -> Sprint
+                    isSprintHeld = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed;
 
-                // Ctrl or C -> Crouch
-                isCrouchHeld = keyboard.leftCtrlKey.isPressed || keyboard.rightCtrlKey.isPressed || keyboard.cKey.isPressed;
+                    // Ctrl or C -> Crouch
+                    isCrouchHeld = keyboard.leftCtrlKey.isPressed || keyboard.rightCtrlKey.isPressed || keyboard.cKey.isPressed;
 
-                // Space -> Jump
-                isJumpPressed = keyboard.spaceKey.wasPressedThisFrame;
+                    // Space -> Jump
+                    isJumpPressed = keyboard.spaceKey.wasPressedThisFrame;
+                }
             }
 
             _isCrouching = isCrouchHeld;
@@ -1071,8 +1373,17 @@ namespace Scorched.Player
             Vector2 moveInput = new Vector2(horizontal, vertical);
             bool isMoving = moveInput.sqrMagnitude > 0.01f;
 
+            if (isDowned)
+            {
+                _healthController?.SetDownedMovingState(isMoving);
+            }
+            else
+            {
+                _healthController?.SetDownedMovingState(false);
+            }
+
             // Stamina drain while sprinting, recovery while walking/jogging/idle
-            bool wantsSprint = isSprintHeld && isMoving && vertical > 0.1f && !_isCrouching;
+            bool wantsSprint = !isDowned && isSprintHeld && isMoving && vertical > 0.1f && !_isCrouching;
             bool canSprint = wantsSprint && _currentStamina > 3.0f;
 
             if (canSprint)
@@ -1089,9 +1400,14 @@ namespace Scorched.Player
                 Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
             }
 
-            // Determine active target speed
+            // Determine active target speed (Downed crawls at 25% of walk/jog speed)
             float currentSpeed;
-            if (_isCrouching)
+            if (isDowned)
+            {
+                float downedMult = _healthController != null ? _healthController.DownedSpeedMultiplier : 0.25f;
+                currentSpeed = _jogSpeed * downedMult;
+            }
+            else if (_isCrouching)
             {
                 currentSpeed = _crouchSpeed;
             }
@@ -1107,12 +1423,12 @@ namespace Scorched.Player
             }
 
             // Strafe / backward speed penalty
-            if (vertical < -0.1f || (Mathf.Abs(horizontal) > 0.1f && Mathf.Abs(vertical) < 0.1f))
+            if (!isDowned && (vertical < -0.1f || (Mathf.Abs(horizontal) > 0.1f && Mathf.Abs(vertical) < 0.1f)))
             {
                 currentSpeed *= _strafeMultiplier;
             }
 
-            // Backward locomotion animation handling (S key plays Jog/Run in reverse)
+            // Backward locomotion animation handling (S key plays Jog/Run/Down Walking in reverse)
             bool isMovingBackward = isMoving && vertical < -0.1f;
             float animSpeedMultiplier = isMovingBackward ? -1.0f : 1.0f;
 
@@ -1130,7 +1446,7 @@ namespace Scorched.Player
             Vector3 moveDirection = (transform.right * moveInput.x + transform.forward * moveInput.y).normalized;
             Vector3 horizontalMove;
 
-            if (_isAirborne)
+            if (_isAirborne && !isDowned)
             {
                 // Mid-air momentum: preserve jump momentum with slight air steering
                 if (isMoving && moveDirection.sqrMagnitude > 0.001f)
@@ -1144,8 +1460,8 @@ namespace Scorched.Player
                 horizontalMove = moveDirection * (currentSpeed * Time.deltaTime);
             }
 
-            // Jump execution (adapts facing to WASD direction when sprint jumping)
-            if (isJumpPressed && _isGrounded && !_isCrouching)
+            // Jump execution (locked out while Downed or Crouched)
+            if (!isDowned && isJumpPressed && _isGrounded && !_isCrouching)
             {
                 ExecuteJump(isMoving, moveDirection, currentSpeed);
             }
@@ -1160,8 +1476,11 @@ namespace Scorched.Player
                 _characterController.Move(finalMotion);
             }
 
-            // Resolve locomotion state
-            ResolveLocomotionState(isMoving, isSprintHeld && vertical > 0.1f);
+            // Resolve locomotion state (only while Alive)
+            if (!isDowned)
+            {
+                ResolveLocomotionState(isMoving, isSprintHeld && vertical > 0.1f);
+            }
         }
 
         private void ExecuteJump(bool isMoving, Vector3 jumpDirection, float horizontalSpeed)
@@ -1220,6 +1539,20 @@ namespace Scorched.Player
 
         private void HandleCombatInput()
         {
+            if (_healthController != null && !_healthController.CanPerformCombatActions)
+            {
+                _attackTimer = 0f;
+                if (_hasIsFiringParam && _animator != null)
+                {
+                    _animator.SetBool(AnimParamIsFiring, false);
+                }
+                if (_hasUpperBodyLayer && _animator != null && _animator.GetLayerWeight(1) > 0f)
+                {
+                    _animator.SetLayerWeight(1, 0f);
+                }
+                return;
+            }
+
             var mouse = Mouse.current ?? InputSystem.GetDevice<Mouse>();
             if (mouse == null || Cursor.lockState != CursorLockMode.Locked)
             {
@@ -1283,11 +1616,14 @@ namespace Scorched.Player
                     // Spawn ballistic bullet projectile towards crosshair target
                     if (_weaponHandler != null)
                     {
+                        var persp = EnsurePerspectiveController();
+                        persp?.PrepareViewmodelForFiring();
+                        persp?.ApplyViewmodelRecoilKick();
                         var proj = _weaponHandler.SpawnBullet(targetPoint, _characterController);
                         if (Scorched.Weapons.BulletVisualPoolManager.Instance != null)
                         {
-                            Vector3 muzPos = _weaponHandler.GetMuzzlePosition();
-                            Transform muzTrans = _weaponHandler.GetOrCreateMuzzlePoint();
+                            Transform muzTrans = persp?.ActiveMuzzlePoint ?? _weaponHandler.GetOrCreateMuzzlePoint();
+                            Vector3 muzPos = muzTrans != null ? muzTrans.position : _weaponHandler.GetMuzzlePosition();
                             Scorched.Weapons.BulletVisualPoolManager.Instance.SpawnMuzzleFlash(muzPos, (targetPoint - muzPos).normalized, muzTrans);
                         }
                     }
@@ -1306,7 +1642,9 @@ namespace Scorched.Player
                     {
                         _animator.SetBool(AnimParamIsFiring, false);
                     }
-                    if (_hasUpperBodyLayer)
+                    bool keepCombatUpperBody = EnsurePerspectiveController() != null &&
+                                              _perspectiveController.CurrentMode == FPSPerspectiveMode.CombatReady_UpperBody;
+                    if (_hasUpperBodyLayer && !keepCombatUpperBody)
                     {
                         _animator.CrossFadeInFixedTime(AnimStateEmpty, 0.12f, 1);
                     }
@@ -1369,6 +1707,23 @@ namespace Scorched.Player
 
         private void UpdateAnimationState()
         {
+            // Phase 5 Direct State Guard: DBNO & Death states strictly override locomotion
+            if (_healthController != null)
+            {
+                if (_healthController.IsDead)
+                {
+                    PlayAnimationDirect(AnimStateDeath, 0.15f);
+                    return;
+                }
+
+                if (_healthController.IsDowned)
+                {
+                    int downStateHash = _healthController.DownedMoving ? AnimStateDownWalking : AnimStateDownIdle;
+                    PlayAnimationDirect(downStateHash, 0.15f);
+                    return;
+                }
+            }
+
             // If airborne, maintain the appropriate jump state until landing
             if (_isAirborne)
             {
@@ -1385,6 +1740,72 @@ namespace Scorched.Player
             if (!_hasUpperBodyLayer && _attackTimer > 0f && (_currentLocomotion == LocomotionState.Idle || _currentLocomotion == LocomotionState.CrouchIdle))
             {
                 PlayAnimationDirect(AnimStateFiringRifle, _fireTransitionDuration);
+            }
+        }
+
+        public void NotifyLifeStateChanged(PlayerLifeState newState)
+        {
+            if (_animator == null)
+            {
+                _animator = GetComponent<Animator>() ?? GetComponentInChildren<Animator>();
+            }
+
+            if (newState == PlayerLifeState.Dead)
+            {
+                _isAirborne = false;
+                _isSprintJumpActive = false;
+                _attackTimer = 0f;
+                if (_hasUpperBodyLayer && _animator != null)
+                {
+                    _animator.SetLayerWeight(1, 0f);
+                }
+                PlayAnimationDirect(AnimStateDeath, 0.15f);
+            }
+            else if (newState == PlayerLifeState.Downed)
+            {
+                _isAirborne = false;
+                _isSprintJumpActive = false;
+                _attackTimer = 0f;
+                _isCrouching = true;
+                AdjustColliderForCrouch(true);
+                if (_hasUpperBodyLayer && _animator != null)
+                {
+                    _animator.SetLayerWeight(1, 0f);
+                }
+                bool moving = _healthController != null && _healthController.DownedMoving;
+                PlayAnimationDirect(moving ? AnimStateDownWalking : AnimStateDownIdle, 0.15f);
+            }
+            else
+            {
+                _isAirborne = false;
+                _isSprintJumpActive = false;
+                _attackTimer = 0f;
+                _isCrouching = false;
+                AdjustColliderForCrouch(false);
+                _currentLocomotion = LocomotionState.Idle;
+                _currentAnimationHash = 0;
+                PlayAnimationDirect(AnimStateIdle, 0.15f);
+            }
+        }
+
+        public void OnHealthControllerRespawned()
+        {
+            _velocity = Vector3.zero;
+            _airborneVelocity = Vector3.zero;
+            _isAirborne = false;
+            _isSprintJumpActive = false;
+            _isCrouching = false;
+            _attackTimer = 0f;
+            _currentHealth = _maxHealth;
+            _currentStamina = _maxStamina;
+            AdjustColliderForCrouch(false);
+            _currentLocomotion = LocomotionState.Idle;
+            _currentAnimationHash = 0;
+            PlayAnimationDirect(AnimStateIdle, 0f);
+
+            if (!IsSpawned || IsOwner)
+            {
+                Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
             }
         }
 
@@ -1442,6 +1863,11 @@ namespace Scorched.Player
                 return;
             }
 
+            if (_healthController != null && !_healthController.IsAlive)
+            {
+                return;
+            }
+
             // Always update remote locomotion so legs never freeze during firing
             if (!_isAirborne)
             {
@@ -1469,6 +1895,11 @@ namespace Scorched.Player
         [Rpc(SendTo.NotOwner)]
         private void PlayActionAnimationRpc(ActionAnimation action)
         {
+            if (_healthController != null && !_healthController.IsAlive)
+            {
+                return;
+            }
+
             switch (action)
             {
                 case ActionAnimation.Jumping:
@@ -1493,72 +1924,20 @@ namespace Scorched.Player
 
         #region IDamageable Implementation
         /// <summary>
-        /// Receives authoritative combat damage and hydration drain from ballistic projectiles and hitscan weapons.
+        /// Receives authoritative combat damage and forwards it directly to PlayerHealthController
+        /// for body-part scaling, DBNO transitions, and delayed respawn.
         /// </summary>
         public void ApplyCombatHit(float healthDamage, float hydrationDamage, ulong attackerClientId, Vector3 hitPoint)
         {
-            // Verify damage legality with NetworkMatchManager (equal teams check & friendly fire immunity)
-            if (Scorched.Combat.NetworkMatchManager.Instance != null && !Scorched.Combat.NetworkMatchManager.Instance.CanDamage(attackerClientId, OwnerClientId))
+            if (_healthController == null)
             {
-                return;
+                _healthController = GetComponent<PlayerHealthController>();
             }
 
-            Debug.Log($"[Combat] Player {OwnerClientId} took {healthDamage:F1} damage and {hydrationDamage:F1} hydration drain from Client {attackerClientId} at {hitPoint}");
-
-            if (IsServer)
+            if (_healthController != null)
             {
-                _networkHealth.Value = Mathf.Max(0f, _networkHealth.Value - healthDamage);
-                _currentHealth = _networkHealth.Value;
-                if (_networkHealth.Value <= 0f)
-                {
-                    RespawnPlayerServer();
-                }
+                _healthController.ApplyCombatHit(healthDamage, hydrationDamage, attackerClientId, hitPoint);
             }
-            else if (!IsSpawned)
-            {
-                // Standalone / offline test mode
-                _currentHealth = Mathf.Max(0f, _currentHealth - healthDamage);
-            }
-
-            // Apply damage to HUD if local player
-            if (IsOwner)
-            {
-                Scorched.UI.L4DHUDManager.Instance?.UpdateHealth(_currentHealth, _maxHealth);
-            }
-        }
-
-        private void RespawnPlayerServer()
-        {
-            _networkHealth.Value = _maxHealth;
-            _currentHealth = _maxHealth;
-
-            int team = -1;
-            Scorched.Combat.GameMode mode = Scorched.Combat.GameMode.FreeForAll;
-            if (Scorched.Combat.NetworkMatchManager.Instance != null)
-            {
-                team = Scorched.Combat.NetworkMatchManager.Instance.GetPlayerTeam(OwnerClientId);
-                mode = Scorched.Combat.NetworkMatchManager.Instance.CurrentGameMode;
-            }
-
-            if (Scorched.Player.TacticalSpawnManager.Instance != null)
-            {
-                Scorched.Player.TacticalSpawnManager.Instance.GetSpawn(OwnerClientId, team, mode, out Vector3 spawnPos, out Quaternion spawnRot);
-                RespawnClientRpc(spawnPos, spawnRot);
-            }
-        }
-
-        [Rpc(SendTo.Owner)]
-        private void RespawnClientRpc(Vector3 pos, Quaternion rot)
-        {
-            if (_characterController != null) _characterController.enabled = false;
-            transform.position = pos;
-            transform.rotation = rot;
-            if (_characterController != null) _characterController.enabled = true;
-            _currentHealth = _maxHealth;
-            _currentStamina = _maxStamina;
-            Scorched.UI.L4DHUDManager.Instance?.UpdateHealth(_currentHealth, _maxHealth);
-            Scorched.UI.L4DHUDManager.Instance?.UpdateStamina(_currentStamina, _maxStamina);
-            Debug.Log($"[Combat] Player {OwnerClientId} respawned at {pos}.");
         }
         #endregion
 

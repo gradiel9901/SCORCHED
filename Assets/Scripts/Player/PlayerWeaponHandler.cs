@@ -54,21 +54,21 @@ namespace Scorched.Player
         private static readonly WeaponPose[] DefaultPoses =
         {
             // Idle
-            new WeaponPose(new Vector3(0.085f, 0.190f, 0.057f), new Vector3(-53.737f, -178.861f, 90.914f)),
+            new WeaponPose(new Vector3(0.035f, 0.085f, 0.015f), new Vector3(-55.0f, -178.0f, 90.0f)),
             // Jog
-            new WeaponPose(new Vector3(0.061f, 0.194f, 0.057f), new Vector3(-55.994f, 164.059f, 95.269f)),
+            new WeaponPose(new Vector3(0.035f, 0.085f, 0.015f), new Vector3(-55.0f, -178.0f, 90.0f)),
             // Running
-            new WeaponPose(new Vector3(0.034f, 0.222f, 0.007f), new Vector3(-38.859f, 178.813f, 73.703f)),
+            new WeaponPose(new Vector3(0.035f, 0.085f, 0.015f), new Vector3(-55.0f, -178.0f, 90.0f)),
             // Jumping
-            new WeaponPose(new Vector3(-0.002f, 0.193f, 0.027f), new Vector3(-47.826f, 168.804f, 61.889f)),
+            new WeaponPose(new Vector3(0.035f, 0.085f, 0.015f), new Vector3(-55.0f, -178.0f, 90.0f)),
             // Sprint Jump
-            new WeaponPose(new Vector3(0.046f, 0.237f, -0.009f), new Vector3(-24.634f, 178.179f, 82.027f)),
+            new WeaponPose(new Vector3(0.035f, 0.085f, 0.015f), new Vector3(-55.0f, -178.0f, 90.0f)),
             // Crouch Idle
-            new WeaponPose(new Vector3(0.080f, 0.227f, 0.032f), new Vector3(-54.072f, 174.174f, 100.126f)),
+            new WeaponPose(new Vector3(0.035f, 0.085f, 0.015f), new Vector3(-55.0f, -178.0f, 90.0f)),
             // Crouched Run
-            new WeaponPose(new Vector3(0.050f, 0.208f, -0.003f), new Vector3(-35.154f, -167.006f, 77.703f)),
+            new WeaponPose(new Vector3(0.035f, 0.085f, 0.015f), new Vector3(-55.0f, -178.0f, 90.0f)),
             // Firing Rifle
-            new WeaponPose(new Vector3(0.060f, 0.192f, 0.022f), new Vector3(-52.590f, -178.831f, 90.890f)),
+            new WeaponPose(new Vector3(0.035f, 0.085f, 0.015f), new Vector3(-55.0f, -178.0f, 90.0f)),
         };
 
         // Runtime overrides if saved by user during play mode
@@ -240,21 +240,21 @@ namespace Scorched.Player
                 return;
             }
 
-            WeaponPoseState activeState = _playerMovement != null
-                ? _playerMovement.CurrentWeaponPoseState
-                : WeaponPoseState.Idle;
+            WeaponPoseState activeState;
+            if (_animator != null && _animator.layerCount > 1 && _animator.GetLayerWeight(1) > 0.5f)
+            {
+                // When upper body layer is active (raised tactical carry / Modern Warfare), keep rifle locked in firing pose
+                activeState = WeaponPoseState.FiringRifle;
+            }
+            else
+            {
+                activeState = _playerMovement != null
+                    ? _playerMovement.CurrentWeaponPoseState
+                    : WeaponPoseState.Idle;
+            }
 
             WeaponPose target = GetPoseForState(activeState);
             Vector3 targetLocalPos = target.LocalPosition;
-
-            // When aiming high up into the sky, gently nudge the weapon forward and down relative to hand
-            // to ensure realistic eye relief distance and prevent clipping into the camera view
-            float pitch = _playerMovement != null ? _playerMovement.CameraPitch : 0f;
-            if (pitch < -10f)
-            {
-                float highAimFactor = Mathf.Clamp01((-pitch - 10f) / 70f);
-                targetLocalPos += new Vector3(0.006f * highAimFactor, -0.025f * highAimFactor, 0.04f * highAimFactor);
-            }
 
             float t = 1f - Mathf.Exp(-_poseTransitionSpeed * Time.deltaTime);
 
@@ -447,17 +447,24 @@ namespace Scorched.Player
                 {
                     var muzzleGo = new GameObject("MuzzlePoint");
                     muzzleGo.transform.SetParent(_equippedWeapon, false);
-                    // Positioned at the barrel tip of the AK47 in local space
-                    muzzleGo.transform.localPosition = new Vector3(0f, 0.045f, 0.65f);
-                    muzzleGo.transform.localRotation = Quaternion.identity;
                     _muzzlePoint = muzzleGo.transform;
                 }
+                // Calibrated barrel tip for AK-47 model in local space
+                _muzzlePoint.localPosition = new Vector3(0.0f, 0.022f, 0.525f);
+                _muzzlePoint.localRotation = Quaternion.identity;
+                _muzzlePoint.localScale = Vector3.one;
             }
             return _muzzlePoint;
         }
 
         public Vector3 GetMuzzlePosition()
         {
+            var perspective = GetComponent<FPSPerspectiveController>();
+            if (perspective != null && perspective.ActiveMuzzlePoint != null)
+            {
+                return perspective.ActiveMuzzlePoint.position;
+            }
+
             var muzzle = GetOrCreateMuzzlePoint();
             if (muzzle != null) return muzzle.position;
 
