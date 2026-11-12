@@ -1,5 +1,7 @@
 using System.Collections.Generic;
+using Unity.Netcode;
 using UnityEngine;
+using Scorched.Combat;
 
 namespace Scorched.Weapons
 {
@@ -30,7 +32,7 @@ namespace Scorched.Weapons
 
         [Header("Impact & Combat")]
         [Tooltip("Direct damage dealt to hit targets.")]
-        [SerializeField] private float _damage = 42.0f;
+        [SerializeField] private float _damage = 22.0f;
 
         [Tooltip("Physical impulse force applied to rigidbodies.")]
         [SerializeField] private float _impactForce = 35.0f;
@@ -101,19 +103,19 @@ namespace Scorched.Weapons
             float stepDistance = stepMove.magnitude;
             Vector3 stepDirection = stepMove / Mathf.Max(0.0001f, stepDistance);
 
-            // Raycast forward along this frame's step
-            Ray ray = new Ray(_currentPosition, stepDirection);
-            if (Physics.Raycast(ray, out RaycastHit hit, stepDistance, _hitMask, QueryTriggerInteraction.Ignore))
+            // Raycast forward along this frame's step using anatomical combat resolver
+            Transform ignoredRoot = _ignoredShooterCollider != null ? _ignoredShooterCollider.transform.root : null;
+            if (CombatHitResolver.TryRaycastFirstCombatHit(
+                _currentPosition,
+                stepDirection,
+                stepDistance,
+                _hitMask,
+                ignoredRoot,
+                out RaycastHit hit,
+                out IDamageable damageable,
+                out BodyPartHitbox hitbox))
             {
-                // Check if hit the shooter themselves
-                if (_ignoredShooterCollider != null && hit.collider == _ignoredShooterCollider)
-                {
-                    // Continue flight past shooter's own collider
-                    AdvancePosition(stepMove);
-                    return;
-                }
-
-                HandleImpact(hit);
+                HandleImpact(hit, damageable, hitbox);
                 return;
             }
 
@@ -132,10 +134,15 @@ namespace Scorched.Weapons
             }
         }
 
-        private void HandleImpact(RaycastHit hit)
+        private void HandleImpact(RaycastHit hit, IDamageable damageable, BodyPartHitbox hitbox)
         {
             _hasHit = true;
             transform.position = hit.point;
+
+            if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsListening || NetworkManager.Singleton.IsServer)
+            {
+                CombatHitResolver.ApplyResolvedHit(damageable, hitbox, _damage, 0f, 0, hit.point, -1);
+            }
 
             // 1. Physical impulse on rigidbodies
             if (hit.rigidbody != null && !hit.rigidbody.isKinematic)

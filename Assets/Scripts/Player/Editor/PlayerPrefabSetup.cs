@@ -10,7 +10,7 @@ namespace Scorched.Editor
 {
     /// <summary>
     /// Utility to ensure that a standalone ScorchedPlayer prefab exists in Assets/Prefabs/
-    /// and is registered as the default PlayerPrefab on NetworkManager in Main.unity.
+    /// and is registered as the default PlayerPrefab on NetworkManager in Level 0 - Test Environment.unity.
     /// This enables Netcode for GameObjects to automatically instantiate and spawn
     /// player avatars when multiple clients join a hosted match.
     /// </summary>
@@ -18,7 +18,7 @@ namespace Scorched.Editor
     public static class PlayerPrefabSetup
     {
         private const string PrefabPath = "Assets/Prefabs/ScorchedPlayer.prefab";
-        private const string MainScenePath = "Assets/Scenes/Main.unity";
+        private const string MainScenePath = "Assets/Scenes/Level 0 - Test Environment.unity";
 
         static PlayerPrefabSetup()
         {
